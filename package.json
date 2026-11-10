@@ -1,0 +1,18 @@
+{
+  "name": "botfigurinhas",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "type": "module",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.18",
+    "dotenv": "^18.0.9",
+    "node-webpmux": "^3.2.1",
+    "pino": "^10.4.0",
+    "wa-sticker-formatter": "^4.4.4"
+  }
+}

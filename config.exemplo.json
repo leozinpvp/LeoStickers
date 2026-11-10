@@ -1,0 +1,12 @@
+{
+  "botName": "Léo Stickers",
+  "prefix": "!",
+  "ownerNumber": "NUMERO_DO_PROPRIETARIO",
+  "packName": "🥴",
+  "authorName": "🫩",
+  "quality": 75,
+  "maxVideoSeconds": 7,
+  "maxMediaMB": 15,
+  "privateMode": false,
+  "ownerLids": []
+}
