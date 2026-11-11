@@ -9,7 +9,7 @@
   "keywords": [],
   "type": "module",
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.18",
+    "@whiskeysockets/baileys": "^6.7.24",
     "dotenv": "^18.0.9",
     "node-webpmux": "^3.2.1",
     "pino": "^10.4.0"
