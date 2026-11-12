@@ -1,0 +1,81 @@
+LÉO STICKERS — EXPANSÃO SEM IA V1
+=================================
+
+O pacote acrescenta um módulo separado: leo-advanced.js.
+Não adiciona dependências npm e usa o fetch nativo do Node.js 18+.
+
+INSTALAÇÃO NO TERMUX
+--------------------
+1. Baixe o ZIP para a pasta Downloads do Android.
+2. No Termux, execute:
+
+cd ~/BotFigurinhas && unzip -o ~/storage/downloads/LEO-STICKERS-EXPANSAO-SEM-IA-V1.zip -d .leo-patch-expansao && bash .leo-patch-expansao/aplicar.sh
+
+3. Se aparecer a mensagem de sucesso, reinicie o bot normalmente.
+
+O instalador cria uma cópia de segurança de index.js, .gitignore e do módulo anterior (se existir).
+Ele só aplica o patch se encontrar os pontos de integração esperados e valida a sintaxe com node --check.
+Se a estrutura do index.js estiver diferente, ele para antes de alterar os arquivos.
+
+NOVOS COMANDOS DE API
+---------------------
+!menuapi
+!anime Naruto
+!manga One Piece
+!personagem Naruto Uzumaki
+!neko
+!waifu
+!gifapi hug
+!cachorro
+!clima São Paulo
+!cotacao USD BRL
+!cep 01001000
+!ddd 11
+!feriado
+!apihealth
+!fila
+
+COMUNIDADE E AUTOMAÇÃO
+----------------------
+!antispam on
+!antispam off
+!rep
+!darrep @pessoa
+!toprep
+!autoadd palavra-chave | resposta
+!autodel palavra-chave
+!autolist
+!agendar 10m mensagem
+!agendados
+!cancelaragendamento CODIGO
+!cargo add @pessoa
+!cargo del @pessoa
+!cargos
+
+REGRAS
+------
+- Antispam: bloqueia temporariamente quem enviar mais de 8 comandos em 10 segundos.
+- Fila: downloads de YouTube em MP3/MP4 rodam um por vez; até 8 pedidos aguardam na fila.
+- Respostas automáticas: somente em grupos; administradores, moderadores cadastrados ou o dono podem gerenciar.
+- Agendamentos: 10 segundos até 7 dias; em grupos, somente administradores, moderadores cadastrados ou o dono podem criar.
+- Cargos extras: somente administradores oficiais do grupo ou o dono podem cadastrar/remover moderadores extras.
+- Reputação: cada pessoa pode dar 1 ponto por dia por grupo; é necessário marcar o destinatário.
+- As imagens de anime são consultadas na categoria SFW do Nekos.best.
+- GIFs da API são convertidos para MP4 animado com FFmpeg antes do envio ao WhatsApp.
+- O clima é uma leitura atual aproximada; a cotação do Frankfurter é referência, não cotação de compra/venda de banco.
+
+ARQUIVOS
+--------
+- leo-advanced.js: módulo novo.
+- aplicar.mjs: patcher com verificações e rollback.
+- aplicar.sh: iniciador para Termux.
+- leo-advanced-data.json: criado pelo bot com respostas, reputações, cargos e agendamentos.
+
+O instalador adiciona leo-advanced-data.json e backup-expansao-sem-ia-*/ ao .gitignore.
+Não altera .env, credenciais da sessão, database.json, biblioteca de figurinhas ou caches existentes.
+
+APIs SEM CHAVE NESTE MÓDULO
+---------------------------
+Jikan (anime/mangá/personagens), Nekos.best (imagens/GIFs SFW), Dog CEO (cachorros),
+Open-Meteo (clima), Frankfurter (câmbio) e BrasilAPI (CEP/DDD/feriados).
+A disponibilidade e os limites dessas APIs pertencem aos respectivos provedores externos.

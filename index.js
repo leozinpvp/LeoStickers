@@ -1,24 +1,25 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import webpmux from 'node-webpmux';
 import 'dotenv/config';
-import { searchYouTube, downloadCreativeCommonsVideo, downloadYouTubeAudio } from './youtube-play.js';
+import { searchYouTube, downloadCreativeCommonsVideo, downloadYouTubeAudio } from './codigo/youtube-play.js';
 import {
   searchGiphy,
   downloadGiphyResult,
   saveStickerToLibrary,
   listLibrary,
   readLibrarySticker
-} from './giphy-library.js';
-import { handleSocialCommand } from './social-features.js';
-import { AUDIO_COMMANDS, EXTRA_COMMANDS, GAME_COMMANDS, STICKER_COMMANDS } from './extra-features.js';
+} from './codigo/giphy-library.js';
+import { handleSocialCommand } from './codigo/social-features.js';
+import { AUDIO_COMMANDS, EXTRA_COMMANDS, GAME_COMMANDS, STICKER_COMMANDS } from './codigo/extra-features.js';
 import {
   BLACKLIST_COMMANDS,
   handleBlacklistCommand,
   handleBlacklistedParticipantUpdate
-} from './blacklist-features.js';
-import { COMMUNITY_COMMANDS, COUPLE_COMMANDS, handleMutedMessage } from './community-features.js';
-import { handleApplicantPrivateMessage, handleGroupJoinRequest, resumeGroupJoinRequests } from './join-approval.js';
-import { handleControlPanelMessage, isGroupBotEnabled, shouldIgnoreGroupMessage, shouldIgnoreGroupTimestamp, preapplyGroupControlCommands, recordInboundMessage, recordConnectionUpdate, recordOutboundMessage } from './control-panel.js';
+} from './codigo/blacklist-features.js';
+import { COMMUNITY_COMMANDS, COUPLE_COMMANDS, handleMutedMessage } from './codigo/community-features.js';
+import { handleApplicantPrivateMessage, handleGroupJoinRequest, resumeGroupJoinRequests } from './codigo/join-approval.js';
+import { handleControlPanelMessage, isGroupBotEnabled, shouldIgnoreGroupMessage, shouldIgnoreGroupTimestamp, preapplyGroupControlCommands, recordInboundMessage, recordConnectionUpdate, recordOutboundMessage } from './codigo/control-panel.js';
+import { ADVANCED_COMMANDS, checkAdvancedRateLimit, handleAdvancedAutoReply, startAdvancedScheduler, handleAdvancedCommand, withAdvancedDownloadQueue } from './codigo/leo-advanced.js'; // LEO_ADVANCED_IMPORT_V1
 import pino from 'pino';
 import fs from 'fs';
 import crypto from 'node:crypto';
@@ -268,6 +269,7 @@ function menu() {
     '🎲 !menubrincadeiras — 60 brincadeiras com GIFs de anime',
     '🏆 !menujogos — Jogos, desafios e ranking',
     '🎧 !menuaudio — Converter e editar áudios',
+    '🌐 !menuapi — APIs de anime, GIFs, clima e utilidades', // LEO_ADVANCED_ROOT_MENU_V1
     '👥 !menucomunidade — Casal, convivência e grupo',
     '🛡️ !menuadm — Administração e moderação',
     '👑 !menudono — Ferramentas do proprietário',
@@ -1788,7 +1790,14 @@ async function handleCommand(msg) {
 
   try {
     
+    // LEO_ADVANCED_ANTISPAM_HOOK_V1
+    const advancedRate = checkAdvancedRateLimit(jid, senderJid, command);
+    if (!advancedRate.allowed) {
+      await send(jid, '🛡️ Antispam: aguarde ' + advancedRate.seconds + ' segundo(s) antes de enviar mais comandos.', msg);
+      return;
+    }
     const SOCIAL_COMMANDS = new Set([
+      ...ADVANCED_COMMANDS, // LEO_ADVANCED_SOCIAL_COMMANDS_V1
       ...COMMUNITY_COMMANDS,
       'favorito', 'favoritos', 'desfavorito',
       'top', 'ranking', 'pack', 'desafio',
@@ -1838,7 +1847,10 @@ async function handleCommand(msg) {
           )
       };
 
-      if (BLACKLIST_COMMANDS.includes(command)) {
+      // LEO_ADVANCED_DISPATCH_V1
+      if (ADVANCED_COMMANDS.includes(command)) {
+        await handleAdvancedCommand(context);
+      } else if (BLACKLIST_COMMANDS.includes(command)) {
         await handleBlacklistCommand(context);
       } else {
         await handleSocialCommand(context);
@@ -1875,7 +1887,7 @@ switch (command) {
           await send(jid, '🎵 Preparando áudio MP3...', msg);
 
           try {
-            const audioData = await downloadYouTubeAudio(selected);
+            const audioData = await withAdvancedDownloadQueue(() => downloadYouTubeAudio(selected), 'YouTube MP3'); // LEO_ADVANCED_DOWNLOAD_QUEUE_MP3_V1
             await sock.sendMessage(jid, {
               audio: audioData.buffer,
               mimetype: 'audio/mpeg',
@@ -1961,7 +1973,7 @@ switch (command) {
           await send(jid, '🎬 Preparando vídeo MP4...', msg);
 
           try {
-            const videoData = await downloadCreativeCommonsVideo(selected);
+            const videoData = await withAdvancedDownloadQueue(() => downloadCreativeCommonsVideo(selected), 'YouTube MP4'); // LEO_ADVANCED_DOWNLOAD_QUEUE_MP4_V1
             await sock.sendMessage(jid, {
               video: videoData.buffer,
               mimetype: 'video/mp4',
@@ -2986,6 +2998,7 @@ async function start(baileys) {
         );
 
         if (type !== 'notify') return;
+        startAdvancedScheduler(currentSock); // LEO_ADVANCED_SCHEDULER_HOOK_V1
 
         // Registra !grupo off/on de todo o lote antes de processar qualquer
         // mensagem. Isso impede a fila do próprio lote de adiantar mensagens antigas.
@@ -3075,6 +3088,7 @@ async function start(baileys) {
           }
 
           await autoSaveIncomingSticker(msg);
+          await handleAdvancedAutoReply(currentSock, msg, config.prefix); // LEO_ADVANCED_AUTOREPLY_HOOK_V1
           // O dono não recebe indicador de digitando; usuários comuns continuam recebendo.
           const commandTextForPresence = getText(msg);
           const ownerSenderForPresence = msg.key?.fromMe

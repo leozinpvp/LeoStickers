@@ -56,3 +56,19 @@ node_modules/
 # Backups locais
 *.backup-*
 index.js.backup*
+leo-advanced-data.json
+backup-expansao-sem-ia-*/
+config/
+config.json
+social-data.json
+auth_info_baileys/
+baileys_auth_info/
+backups/
+backup-*/
+*.bak*
+*.pem
+*.key
+*.p12
+*credentials*.json
+*secrets*.json
+*token*.json

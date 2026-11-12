@@ -19,7 +19,8 @@ trap stop_supervisor INT TERM
 
 while [ "$STOP_REQUESTED" -eq 0 ]; do
   printf '[%s] Iniciando Léo Stickers...\n' "$(now)" | tee -a "$RESTART_LOG"
-  node index.js
+  MEMORY_MB="$(node -e 'try { const d=require("./leo-advanced-data.json"); const n=Number(d.performance?.memoryMb); console.log([512,768,1024].includes(n) ? n : 768); } catch { console.log(768); }')"
+    node --max-old-space-size="$MEMORY_MB" index.js
   BOT_STATUS=$?
 
   if [ "$STOP_REQUESTED" -eq 1 ]; then
