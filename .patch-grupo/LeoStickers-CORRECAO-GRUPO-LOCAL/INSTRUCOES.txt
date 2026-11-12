@@ -1,0 +1,16 @@
+LEO STICKERS — CORREÇÃO DO COMANDO !GRUPO
+
+O que muda:
+- !grupo off: pausa o bot somente no grupo em que o comando foi enviado.
+- !grupo on: reativa o bot somente no grupo em que o comando foi enviado.
+- !grupos: mantém o painel para selecionar e controlar outros grupos.
+- !grupo off NOME e !grupo on NOME continuam funcionando.
+- Os comandos de controle continuam exclusivos do proprietário.
+
+Como aplicar no Termux:
+1. Extraia este ZIP para ~/BotFigurinhas/.patch-grupo
+2. Execute: bash ~/BotFigurinhas/.patch-grupo/aplicar.sh
+3. Inicie novamente: cd ~/BotFigurinhas && bash start-bot.sh
+
+O script cria um backup datado do control-panel.js atual antes de substituí-lo.
+Não altera config.json, .env, bancos de dados ou sessão do WhatsApp.

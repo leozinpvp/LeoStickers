@@ -1,0 +1,27 @@
+BRINCADEIRA | !8ball | GIF ADICIONADO AO CACHE | busca="anime crying" | fairy tail crying GIF | https://giphy.com/gifs/crying-fairy-tail-jmroipCNWfDCE
+BRINCADEIRA | !dado | GIF ADICIONADO AO CACHE | busca="anime dice roll game scene" | Fun Fly GIF | https://giphy.com/gifs/jujutsu-kaisen-jjk-3-bjgJGqlD3iapyOaXj4
+BRINCADEIRA | !moeda | GIF ADICIONADO AO CACHE | busca="anime flipping coin" | Pokemon Moon And Sun GIF by Kennysgifs | https://giphy.com/gifs/pikachu-pichu-picachu-ypvq44zQW7y12ScpwA
+BRINCADEIRA | !sorteio | GIF ADICIONADO AO CACHE | busca="anime lottery winner" | Laugh Jjk GIF | https://giphy.com/gifs/anime-meme-reaction-image-pf9aov3NFDYwvL7fZN
+BRINCADEIRA | !escolher | SEM GIF COMPATÍVEL NAS BUSCAS ATUAIS
+BRINCADEIRA | !parouimpar | GIF ADICIONADO AO CACHE | busca="anime rock paper scissors" | hunter x hunter gon freecs GIF | https://giphy.com/gifs/hunter-x-hxh-2FDBn9eGYMi2Y
+BRINCADEIRA | !ppt | GIF ADICIONADO AO CACHE | busca="anime rock paper scissors" | hunter x hunter gon freecs GIF | https://giphy.com/gifs/hunter-x-hxh-2FDBn9eGYMi2Y
+BRINCADEIRA | !numeroaleatorio | SEM GIF COMPATÍVEL NAS BUSCAS ATUAIS
+BRINCADEIRA | !embaralhar | GIF ADICIONADO AO CACHE | busca="anime playing cards shuffle" | Uma Musume Pretty Derby Dancing GIF | https://giphy.com/gifs/umamusume-uma-musume-miLonHLINlX9ipC4L6
+BRINCADEIRA | !anagrama | SEM GIF COMPATÍVEL NAS BUSCAS ATUAIS
+BRINCADEIRA | !rima | GIF ADICIONADO AO CACHE | busca="anime singing microphone" | Angel Beats Pink Haired Anime Girl GIF | https://giphy.com/gifs/angel-beats-l0HlNSzPfTE3cF9Kw
+BRINCADEIRA | !frasealeatoria | GIF ADICIONADO AO CACHE | busca="anime quote" | Manga Quote Stand Proud GIF | https://giphy.com/gifs/larping-stand-proud-sukuna-M1kxrHTH8HkP9tFQrQ
+BRINCADEIRA | !emoji | GIF ADICIONADO AO CACHE | busca="anime funny reaction face" | Kimetsu No Yaiba What GIF by iQiyi | https://giphy.com/gifs/iQiyiOfficial-anime-demon-slayer-kimetsu-no-yaiba-sbrXFzxizp7OHjv9RI
+BRINCADEIRA | !roletatemas | ERRO DE CONSULTA — parei para evitar repetir falhas | Falha na consulta GIPHY: API rate limit exceeded
+
+========== RESUMO ========== 
+Mapas sem consulta: 0
+Resultados preservados: 0
+Caches já existentes e válidos: 0
+GIFs novos adicionados: 10
+Sem GIF compatível: 3
+Caches inválidos preservados: 0
+Erros: 1
+Consultas GIPHY realizadas: 49
+Comandos não processados: 65
+Motivo da interrupção: Falha na consulta GIPHY: API rate limit exceeded
+============================

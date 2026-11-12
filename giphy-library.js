@@ -239,7 +239,7 @@ export async function searchGiphyGif(query) {
   const url = new URL('https://api.giphy.com/v1/gifs/search');
   url.searchParams.set('api_key', apiKey);
   url.searchParams.set('q', query);
-  url.searchParams.set('limit', '10');
+  url.searchParams.set('limit', '20');
   // GIFs de interações usam PG-13 para evitar resultados excessivamente infantis; sem gore explícito.
   url.searchParams.set('rating', 'pg-13');
   url.searchParams.set('lang', 'en');
@@ -267,7 +267,9 @@ export async function searchGiphyGif(query) {
     return {
       id: String(item.id || ''),
       title: String(item.title || 'GIF'),
+      slug: String(item.slug || ''),
       tags: Array.isArray(item.tags) ? item.tags.map(tag => String(tag || '')).filter(Boolean) : [],
+      source: String(item.source || ''),
       pageUrl: String(item.url || ''),
       mp4Url: parsed.toString()
     };

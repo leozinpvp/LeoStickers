@@ -3,70 +3,252 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { searchGiphyGif, downloadGiphyGif } from './giphy-library.js';
-import { findThematicGif } from './gif-matcher.js';
+import { findThematicGif, expandGifQueries } from './gif-matcher.js';
 
 export const GAME_GIF_QUERIES = Object.freeze({
-  '8ball': ['anime magic 8 ball reaction', 'anime yes or no thinking'],
-  dado: ['anime rolling dice reaction', 'anime dice game'],
-  moeda: ['anime coin toss reaction', 'anime flipping coin'],
-  sorteio: ['anime lottery winner reaction', 'anime raffle winner celebration'],
-  escolher: ['anime choosing between two things', 'anime indecisive reaction'],
-  parouimpar: ['anime odd or even hand game', 'anime hand guessing game'],
-  ppt: ['anime rock paper scissors scene', 'anime janken game'],
-  numeroaleatorio: ['anime random number reaction', 'anime number guessing reaction'],
-  embaralhar: ['anime card shuffle scene', 'anime shuffling playing cards'],
-  anagrama: ['anime word puzzle reaction', 'anime solving letters puzzle'],
-  rima: ['anime rap battle scene', 'anime microphone rap reaction'],
-  frasealeatoria: ['anime inspirational quote reaction', 'anime dramatic quote scene'],
-  emoji: ['anime expressive reaction face', 'anime funny reaction face'],
-  roletatemas: ['anime spinning roulette wheel', 'anime random wheel reaction'],
-  quemseria: ['anime thinking who is it reaction', 'anime curious pointing scene'],
-  desculpa: ['anime apologizing embarrassed scene', 'anime sorry bow reaction'],
-  apelido: ['anime teasing nickname reaction', 'anime playful teasing scene'],
-  conselho: ['anime serious advice scene', 'anime mentor giving advice'],
-  piada: ['anime laughing hard reaction', 'anime comedy laughing scene'],
-  perguntaaleatoria: ['anime confused question mark reaction', 'anime puzzled face scene'],
-  verdade: ['anime serious truth reaction', 'anime shocked honest reaction'],
-  desafioflash: ['anime challenge accepted scene', 'anime determined fighting pose'],
-  eununca: ['anime shocked confession reaction', 'anime embarrassed party reaction'],
-  quemnunca: ['anime pointing at someone reaction', 'anime surprised group reaction'],
-  confissao: ['anime secret whisper scene', 'anime shy confession scene'],
-  testeamor: ['anime couple compatibility reaction', 'anime romantic blushing reaction'],
-  personalidade: ['anime personality reaction montage', 'anime expressive character reaction'],
-  superpoder: ['anime power awakening scene', 'anime aura power up reaction'],
-  profissao: ['anime job interview reaction', 'anime office worker reaction'],
-  animal: ['anime cute animal reaction', 'anime pet cute scene'],
-  heroi: ['anime hero entrance pose', 'anime heroic arrival scene'],
-  vilao: ['anime villain evil laugh scene', 'anime villain smirk reaction'],
-  elemento: ['anime elemental powers fire water wind', 'anime elemental magic scene'],
-  planeta: ['anime outer space planet scene', 'anime galaxy stars reaction'],
-  comida: ['anime eating delicious food scene', 'anime food reaction happy'],
-  cor: ['anime colorful aura transformation', 'anime rainbow colorful scene'],
-  musica: ['anime dancing to music scene', 'anime band performance reaction'],
-  filme: ['anime watching movie popcorn scene', 'anime cinema reaction'],
-  time: ['anime team victory celebration', 'anime sports team cheering'],
-  previsao: ['anime fortune teller crystal ball', 'anime predicting the future scene'],
-  sorte: ['anime lucky reaction celebration', 'anime good luck happy scene'],
-  azar: ['anime bad luck comedy fail', 'anime unlucky shocked reaction'],
-  quemganha: ['anime winner victory pose', 'anime tournament winner celebration'],
-  mancheteabsurda: ['anime breaking news shocked reaction', 'anime dramatic news reporter'],
-  matar: ['anime dramatic fainting scene no blood', 'anime dramatic defeat reaction'],
-  bater: ['anime slap scene reaction', 'anime character gets slapped comedy'],
-  beijar: ['anime couple kiss scene', 'anime romantic kiss reaction'],
-  chutar: ['anime kick impact fight scene', 'anime character flying kick'],
-  abracar: ['anime warm hug scene', 'anime friends hugging tightly'],
-  cafune: ['anime head pat scene', 'anime gentle head rub cute'],
-  morder: ['anime playful cheek bite scene', 'anime cute bite reaction'],
-  empurrar: ['anime comedic shove scene', 'anime character pushing another'],
-  highfive: ['anime high five scene', 'anime friends high five celebration'],
-  assustar: ['anime jump scare shocked reaction', 'anime scared surprised face'],
-  proteger: ['anime protecting friend from attack', 'anime shield block save friend'],
-  elogiar: ['anime blushing after compliment', 'anime shy happy compliment reaction'],
-  zoar: ['anime teasing laughing scene', 'anime playful roast reaction'],
-  salvar: ['anime hero rescue scene', 'anime catching friend before falling'],
-  dancinha: ['anime character funny dance scene', 'anime dance meme'],
-  cumprimentar: ['anime greeting handshake scene', 'anime waving hello reaction'],
-  listanegra: ['death note light yagami writing name notebook']
+  "8ball": [
+    "anime fortune teller crystal ball reaction",
+    "anime character thinking prediction scene"
+  ],
+  "dado": [
+    "anime dice roll game scene",
+    "anime character rolling dice"
+  ],
+  "moeda": [
+    "anime coin toss close up",
+    "anime flipping coin reaction"
+  ],
+  "sorteio": [
+    "anime lottery winner celebration",
+    "anime prize draw celebration"
+  ],
+  "escolher": [
+    "anime indecisive choosing scene",
+    "anime choosing between two options"
+  ],
+  "parouimpar": [
+    "anime rock paper scissors hand game",
+    "anime hand guessing game"
+  ],
+  "ppt": [
+    "anime janken rock paper scissors scene",
+    "anime rock paper scissors match"
+  ],
+  "numeroaleatorio": [
+    "anime random number guess reaction",
+    "anime number game scene"
+  ],
+  "embaralhar": [
+    "anime playing cards shuffle scene",
+    "anime card game dramatic draw"
+  ],
+  "anagrama": [
+    "anime puzzle solving letters scene",
+    "anime character brain puzzle"
+  ],
+  "rima": [
+    "anime rap battle performance",
+    "anime character singing microphone"
+  ],
+  "frasealeatoria": [
+    "anime dramatic quote reaction",
+    "anime motivational speech scene"
+  ],
+  "emoji": [
+    "anime expressive reaction face",
+    "anime funny reaction face"
+  ],
+  "roletatemas": [
+    "anime spinning wheel roulette scene",
+    "anime game show roulette"
+  ],
+  "quemseria": [
+    "anime character pointing at friend",
+    "anime thoughtful group reaction"
+  ],
+  "desculpa": [
+    "anime apology bow scene",
+    "anime embarrassed saying sorry"
+  ],
+  "apelido": [
+    "anime teasing nickname friend scene",
+    "anime funny character teasing"
+  ],
+  "conselho": [
+    "anime mentor giving advice scene",
+    "anime serious conversation"
+  ],
+  "piada": [
+    "anime character laughing hard",
+    "anime comedy laugh reaction"
+  ],
+  "perguntaaleatoria": [
+    "anime confused question mark scene",
+    "anime puzzled reaction face"
+  ],
+  "verdade": [
+    "anime shocked truth reveal scene",
+    "anime serious confession reaction"
+  ],
+  "desafioflash": [
+    "anime challenge accepted pose",
+    "anime determined battle stance"
+  ],
+  "eununca": [
+    "anime shocked confession party scene",
+    "anime embarrassed group reaction"
+  ],
+  "quemnunca": [
+    "anime pointing at someone scene",
+    "anime group surprised reaction"
+  ],
+  "confissao": [
+    "anime secret whisper scene",
+    "anime shy confession reaction"
+  ],
+  "testeamor": [
+    "anime couple blushing together",
+    "anime romantic compatibility reaction"
+  ],
+  "personalidade": [
+    "anime personality expression montage",
+    "anime character funny reaction"
+  ],
+  "superpoder": [
+    "anime power awakening aura scene",
+    "anime transformation power up"
+  ],
+  "profissao": [
+    "anime character office work scene",
+    "anime job interview reaction"
+  ],
+  "animal": [
+    "anime cute animal companion scene",
+    "anime pet character reaction"
+  ],
+  "heroi": [
+    "anime hero entrance scene",
+    "anime heroic arrival pose"
+  ],
+  "vilao": [
+    "anime villain evil laugh scene",
+    "anime villain smirk reaction"
+  ],
+  "elemento": [
+    "anime elemental magic fire water wind",
+    "anime elemental power attack scene"
+  ],
+  "planeta": [
+    "anime space galaxy planet scene",
+    "anime cosmic stars scenery"
+  ],
+  "comida": [
+    "anime delicious food reaction scene",
+    "anime character eating happily"
+  ],
+  "cor": [
+    "anime colorful transformation scene",
+    "anime rainbow aura transformation"
+  ],
+  "musica": [
+    "anime band performance scene",
+    "anime character dancing music"
+  ],
+  "filme": [
+    "anime movie theater popcorn scene",
+    "anime watching movie reaction"
+  ],
+  "time": [
+    "anime sports team victory cheering",
+    "anime team celebration scene"
+  ],
+  "previsao": [
+    "anime fortune teller prediction scene",
+    "anime crystal ball future vision"
+  ],
+  "sorte": [
+    "anime lucky celebration scene",
+    "anime winning happy reaction"
+  ],
+  "azar": [
+    "anime unlucky comedy fail scene",
+    "anime bad luck reaction"
+  ],
+  "quemganha": [
+    "anime tournament winner victory pose",
+    "anime champion celebration scene"
+  ],
+  "mancheteabsurda": [
+    "anime dramatic news reporter reaction",
+    "anime shocked news broadcast scene"
+  ],
+  "matar": [
+    "anime sword battle defeat scene no blood",
+    "Naruto anime dramatic final blow opponent"
+  ],
+  "bater": [
+    "anime comedy slap scene reaction",
+    "Naruto anime character gets slapped"
+  ],
+  "beijar": [
+    "anime romantic kiss scene couple",
+    "Horimiya anime kiss scene"
+  ],
+  "chutar": [
+    "anime flying kick fight scene",
+    "Dragon Ball anime kick attack"
+  ],
+  "abracar": [
+    "anime emotional hug scene",
+    "Naruto anime friends hug"
+  ],
+  "cafune": [
+    "anime gentle head pat scene",
+    "Spy x Family Anya head pat"
+  ],
+  "morder": [
+    "anime playful cheek bite scene",
+    "anime cute playful bite reaction"
+  ],
+  "empurrar": [
+    "anime character pushing another comedy",
+    "anime comedic shove scene"
+  ],
+  "highfive": [
+    "anime friends high five celebration",
+    "anime team high five scene"
+  ],
+  "assustar": [
+    "anime jump scare shocked face",
+    "anime character gets startled"
+  ],
+  "proteger": [
+    "anime protecting friend from attack",
+    "anime shield save friend scene"
+  ],
+  "elogiar": [
+    "anime blushing from compliment",
+    "anime shy happy reaction"
+  ],
+  "zoar": [
+    "anime teasing friend comedy scene",
+    "anime laughing with friend"
+  ],
+  "salvar": [
+    "anime hero rescuing friend scene",
+    "anime catching someone falling"
+  ],
+  "dancinha": [
+    "anime character funny dance scene",
+    "anime dance meme scene"
+  ],
+  "cumprimentar": [
+    "anime character greeting waving hello",
+    "anime handshake greeting scene"
+  ],
+  "listanegra": [
+    "Death Note Light Yagami writing name notebook"
+  ]
 });
 
 const GAME_GIF_CACHE = path.resolve('./gifs/cache');
@@ -144,8 +326,7 @@ async function gameGifBuffer(command) {
   const queries = (Array.isArray(rawQueries) ? rawQueries : [rawQueries]).filter(Boolean);
   if (!queries.length) return null;
 
-  const cacheKey = `${command}-thematic-v6`;
-  const filepath = path.join(GAME_GIF_CACHE, `${command}-thematic-v6.mp4`);
+  const filepath = path.join(GAME_GIF_CACHE, `${command}-anime-v8.mp4`);
   try {
     const cached = fs.readFileSync(filepath);
     if (validGameMp4(cached)) return cached;
@@ -153,11 +334,12 @@ async function gameGifBuffer(command) {
   } catch {}
 
   let lastError = null;
-  for (const query of queries) {
+  for (const query of expandGifQueries(queries)) {
     try {
       const results = await searchGiphyGif(query);
       const result = findThematicGif(results, query);
       if (!result) continue;
+      console.log(`[GIF ${command}] Anime selecionado: ${result.title || result.slug || result.id}`);
       const buffer = await downloadGiphyGif(result);
       if (!validGameMp4(buffer)) throw new Error('GIPHY não retornou um MP4 válido.');
       fs.writeFileSync(filepath, buffer);

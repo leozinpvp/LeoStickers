@@ -1,0 +1,19 @@
+LEO STICKERS — IGNORAR MENSAGENS ENVIADAS DURANTE A PAUSA
+
+Esta atualização mantém !grupo off, !grupo on e !grupos.
+Quando um grupo é reativado, mensagens com timestamp anterior ou igual ao da
+mensagem que reativou o grupo são descartadas. Só mensagens novas são tratadas.
+
+Instalação no Termux:
+1) Pare o bot com Ctrl+C.
+2) Extraia este ZIP.
+3) Execute: bash ~/storage/downloads/LeoStickers-IGNORAR-MENSAGENS-OFF/aplicar.sh
+   (ajuste o caminho se o ZIP foi extraído em outra pasta).
+4) Inicie: cd ~/BotFigurinhas && bash start-bot.sh
+
+O script cria backups de index.js e control-panel.js antes de substituir.
+As configurações, dados, sessão e dependências não são alterados.
+
+Observação: o timestamp do WhatsApp tem precisão de segundos; por segurança,
+a mensagem de reativação e outras mensagens com o mesmo segundo são tratadas
+como parte da pausa. O processamento normal retoma no segundo seguinte.

@@ -1,0 +1,101 @@
+LÉO STICKERS — CONTROLE INTELIGENTE V1
+=====================================
+
+O QUE ESTA ATUALIZAÇÃO ADICIONA
+-------------------------------
+1) !status (no PV do proprietário)
+   - Estado de conexão do socket
+   - Tempo ligado desde o início deste processo
+   - Memória RSS e heap utilizado
+   - Mensagens recebidas pelo processo
+   - Reconexões após a primeira conexão
+   - Quantidade de grupos conectados e grupos pausados
+   - Atraso p95 do event loop
+   - Tempo até a confirmação local do envio de uma mensagem
+
+   IMPORTANTE: a medição de envio NÃO é um ping completo da internet até o
+   celular. É o tempo medido até o Baileys concluir o envio/ack local.
+
+2) !grupos (no PV do proprietário)
+   - Lista os grupos em que o bot está presente.
+   - Selecione um grupo no menu interativo.
+   - Use os botões Ativar bot / Desativar bot.
+   - A pausa é individual por ID de grupo. O bot continua conectado ao WhatsApp.
+   - Ao reativar, o sistema tenta reconciliar solicitações/entradas pendentes.
+
+   Alternativa textual caso os menus não apareçam:
+      !grupo off 120363...@g.us
+      !grupo on 120363...@g.us
+
+3) Convite da apresentação
+   - Botão “Iniciar apresentação”: abre o fluxo sem digitar !apresentacao.
+   - Botão “Copiar modelo”: copia os campos configurados para aquele grupo.
+   - Fallback em texto com o comando !apresentação CÓDIGO caso os botões não apareçam.
+
+SEGURANÇA E PRESERVAÇÃO
+-----------------------
+- O painel é exclusivo do proprietário reconhecido por isOwner() no index.js.
+- O estado de ativação/desativação fica em group-bot-control.json, separado
+  das cláusulas e dos dados de apresentação.
+- O estado é salvo por JID, nunca pelo nome visível do grupo.
+- Desativar um grupo não apaga aplicações nem configurações de apresentação.
+- Não altera a sessão do WhatsApp, .env, node_modules, start-bot.sh ou bancos
+  existentes.
+- O instalador cria uma pasta backup-controle-inteligente-DATA-HORA.
+
+REQUISITOS
+----------
+- A entrada multigrupo V2 já deve estar instalada e funcionando.
+- Baileys 6.7.18.
+- Node.js com suporte a ES modules (o projeto atual já usa import/export).
+
+INSTALAÇÃO NO TERMUX
+--------------------
+1. Coloque LEO-STICKERS-CONTROLE-INTELIGENTE-V1.tar.gz em Downloads.
+2. Rode:
+
+   cd ~/BotFigurinhas || exit 1
+   tar -xzf ~/storage/downloads/LEO-STICKERS-CONTROLE-INTELIGENTE-V1.tar.gz -C ~/BotFigurinhas
+   bash ~/BotFigurinhas/LEO-STICKERS-CONTROLE-INTELIGENTE-V1/aplicar.sh
+
+3. Inicie normalmente:
+
+   bash ~/BotFigurinhas/start-bot.sh
+
+COMO USAR
+---------
+No PV do proprietário:
+   !status
+   !grupos
+
+No seletor, escolha um grupo. Depois pressione Ativar bot ou Desativar bot.
+O estado de cada grupo é independente.
+
+No convite de apresentação, o candidato verá:
+   - Iniciar apresentação
+   - Copiar modelo
+
+Se o WhatsApp não exibir os botões em determinado cliente, a mensagem de texto
+continuará trazendo o comando de início e os campos para copiar manualmente.
+
+TESTES E LIMITAÇÕES
+-------------------
+O instalador executa testes locais para:
+- preservar as regras e o bloqueio de idade da V2;
+- salvar/reativar o controle de grupos por ID;
+- gerar as estruturas nativas dos botões com Baileys 6.7.18;
+- conferir o caminho de início da apresentação pelo botão e o modelo para copiar;
+- validar a sintaxe dos arquivos alterados.
+
+Esses testes não enviam mensagens ao WhatsApp real. Depois de instalar, teste
+!status, !grupos, desative/reative um grupo de teste e faça uma apresentação
+com uma conta de teste. A exibição dos botões pode variar conforme o cliente
+WhatsApp e a compatibilidade do recurso native-flow.
+
+REVERSÃO
+--------
+O instalador informa o caminho do backup. Para reverter, substitua os arquivos
+index.js e join-approval.js pelos arquivos de mesmo nome dentro do backup.
+Se control-panel.js e interactive-buttons.js não existiam antes, remova-os.
+Não remova group-bot-control.json a menos que queira voltar todos os grupos ao
+estado padrão (ativo).

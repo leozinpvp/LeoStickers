@@ -1,5 +1,7 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import webpmux from 'node-webpmux';
 import 'dotenv/config';
+import { searchYouTube, downloadCreativeCommonsVideo, downloadYouTubeAudio } from './youtube-play.js';
 import {
   searchGiphy,
   downloadGiphyResult,
@@ -16,7 +18,7 @@ import {
 } from './blacklist-features.js';
 import { COMMUNITY_COMMANDS, COUPLE_COMMANDS, handleMutedMessage } from './community-features.js';
 import { handleApplicantPrivateMessage, handleGroupJoinRequest, resumeGroupJoinRequests } from './join-approval.js';
-import { handleControlPanelMessage, isGroupBotEnabled, recordInboundMessage, recordConnectionUpdate } from './control-panel.js';
+import { handleControlPanelMessage, isGroupBotEnabled, shouldIgnoreGroupMessage, shouldIgnoreGroupTimestamp, preapplyGroupControlCommands, recordInboundMessage, recordConnectionUpdate, recordOutboundMessage } from './control-panel.js';
 import pino from 'pino';
 import fs from 'fs';
 import crypto from 'node:crypto';
@@ -263,7 +265,7 @@ function menu() {
     '',
     '🧩 !menufigurinhas — Criar, buscar e organizar figurinhas',
     '🖼️ !menuimagem — Efeitos e edição de imagens',
-    '🎲 !menubrincadeiras — 60 brincadeiras, cada uma com GIF próprio',
+    '🎲 !menubrincadeiras — 60 brincadeiras com GIFs de anime',
     '🏆 !menujogos — Jogos, desafios e ranking',
     '🎧 !menuaudio — Converter e editar áudios',
     '👥 !menucomunidade — Casal, convivência e grupo',
@@ -291,7 +293,7 @@ function menuCategory(command) {
     'entrada','autoaceitar','autoaprovarsolicitacao','criarclausulas','clausulas','solicitacoes','aprovarsolicitacao','recusarsolicitacao',
     'mute','desmute','ban','listanegra','tirarlistanegra'
   ];
-  const ownerCommands = ['painel','reiniciar','backup','restaurar','usuarios','limparcache','logs','bloquear'];
+  const ownerCommands = ['status','grupos','latencia','painel','reiniciar','backup','restaurar','usuarios','limparcache','logs','bloquear'];
   const imageCommands = [
     'imgcontorno','imgsombra','imgpixel','imgnegativo','imgpb','imgzoom','imgdesfocar',
     'imgespelhar','imggirar','imgbrilho','imgcontraste','imgsaturacao','imgsepia',
@@ -324,11 +326,11 @@ function menuCategory(command) {
         '\n\nComandos exclusivos ou restritos ao proprietário do Léo Stickers.';
     case 'menubrincadeiras':
       return '🎲 MENU DE BRINCADEIRAS — ' + GAME_COMMANDS.length + ' COMANDOS / GIFS PERSONALIZADOS\n\n' + games +
-        '\n\nCada brincadeira tem uma busca de GIF própria e cache separado. Se o GIPHY estiver indisponível, o bot responde em texto.';
+        '\n\nCada brincadeira procura uma cena de anime própria e mantém cache separado. Se não houver cena adequada, o bot responde em texto.';
     case 'menujogos':
       return '🏆 MENU DE JOGOS E RANKING\n\n' + list(['duelo','desafio','quiz','roleta','top','ranking','desafiofig','votefig','roubarfig','adivinhe','resposta','corridafig']);
     case 'menuaudio':
-      return '🎧 MENU DE ÁUDIO\n\n' + list([...AUDIO_COMMANDS]) +
+      return '🎧 MENU DE ÁUDIO\n\n' + list([...AUDIO_COMMANDS, 'play', 'playmp4']) +
         '\n\nResponda a um áudio ou envie um áudio junto com o comando.';
     case 'menufigurinhas':
       return '🧩 MENU DE FIGURINHAS\n\nCRIAÇÃO, BUSCA E BIBLIOTECA\n' + list(stickerBase) +
@@ -385,9 +387,13 @@ let db = fs.existsSync('./database.json')
 let sock;
 let authState = null;
 const pendingStickerPacks = new Map();
+const ownerCommandContext = new AsyncLocalStorage();
+
 let reconnecting = false;
 let reconnectTimer = null;
-const giphySearches = new Map(); 
+const giphySearches = new Map();
+const youtubeSearches = new Map();
+const youtubeAudioSearches = new Map(); 
 function equalHash(buffer, expectedBase64) {
   if (!expectedBase64) return false;
 
@@ -1741,6 +1747,10 @@ async function handleCommand(msg) {
   if (!msg.message) return;
 
   const jid = msg.key.remoteJid;
+  if (jid?.endsWith('@g.us') && shouldIgnoreGroupMessage(jid, msg)) {
+    console.log('[CONTROLE] Mensagem descartada na entrada do comando: enviada durante a pausa do grupo.');
+    return;
+  }
   const senderJid = msg.key.fromMe
     ? (authState?.creds?.me?.lid || authState?.creds?.me?.id || msg.key.participant || jid)
     : (msg.key.participant || jid);
@@ -1837,6 +1847,180 @@ async function handleCommand(msg) {
     }
 
 switch (command) {
+
+      
+      case 'play': {
+        if (!value) {
+          await send(jid, '🎵 Uso: !play assunto\nExemplo: !play Naruto\nDepois escolha com !play 1, !play 2 etc.', msg);
+          break;
+        }
+
+        const playValue = String(value).trim();
+
+        if (/^\d+$/.test(playValue)) {
+          const number = Number(playValue);
+          const search = youtubeAudioSearches.get(jid);
+
+          if (!search || Date.now() - search.createdAt > 30 * 60 * 1000) {
+            await send(jid, '⌛ Pesquisa de áudio expirada. Faça outra com !play assunto.', msg);
+            break;
+          }
+
+          const selected = search.results[number - 1];
+          if (!selected) {
+            await send(jid, '❌ Número não encontrado.', msg);
+            break;
+          }
+
+          await send(jid, '🎵 Preparando áudio MP3...', msg);
+
+          try {
+            const audioData = await downloadYouTubeAudio(selected);
+            await sock.sendMessage(jid, {
+              audio: audioData.buffer,
+              mimetype: 'audio/mpeg',
+              fileName: 'leo-stickers-play.mp3',
+              caption:
+                '🎵 *LÉO STICKERS — PLAY ÁUDIO*\n\n' +
+                'Título: ' + audioData.title + '\n' +
+                'Canal: ' + audioData.channel + '\n' +
+                'Origem: ' + audioData.url
+            }, { quoted: msg });
+          } catch (error) {
+            console.error('[PLAY AUDIO]', error?.stack || error);
+
+            const aviso = error.code === 'TOO_LONG'
+              ? '⏱️ Áudio maior que 10 minutos.'
+              : error.code === 'AUDIO_SIZE'
+                ? '📦 Áudio maior que 15 MB.'
+                : error.code === 'TOOL_MISSING'
+                  ? '❌ yt-dlp não encontrado.'
+                  : '❌ Falha ao preparar áudio: ' + (error.message || 'erro desconhecido');
+
+            await send(jid, aviso + '\n' + selected.url, msg);
+          }
+          break;
+        }
+
+        await send(jid, '🔎 Pesquisando áudios no YouTube...', msg);
+        try {
+          const results = await searchYouTube(playValue);
+          if (!results.length) {
+            await send(jid, 'Não encontrei resultados para essa pesquisa.', msg);
+            break;
+          }
+
+          youtubeAudioSearches.set(jid, {
+            results,
+            createdAt: Date.now()
+          });
+
+          const lines = results.map((item, index) =>
+            (index + 1) + '. ' + item.title + '\n' +
+            'Canal: ' + item.channel + '\n' +
+            'Duração: ' + item.duration + '\n' + item.url
+          );
+
+          await send(
+            jid,
+            '🎵 *RESULTADOS DE ÁUDIO — YOUTUBE*\n\n' +
+            lines.join('\n\n') +
+            '\n\nPara receber em MP3, use !play número. Exemplo: !play 1.',
+            msg
+          );
+        } catch (error) {
+          console.error('[PLAY AUDIO SEARCH]', error?.stack || error);
+          await send(jid, '❌ Erro na pesquisa: ' + (error.message || 'erro desconhecido'), msg);
+        }
+        break;
+      }
+
+      case 'playmp4': {
+        if (!value) {
+          await send(jid, '🎬 Uso: !playmp4 assunto\nExemplo: !playmp4 Naruto\nDepois escolha com !playmp4 1, !playmp4 2 etc.', msg);
+          break;
+        }
+
+        const playValue = String(value).trim();
+
+        if (/^\d+$/.test(playValue)) {
+          const number = Number(playValue);
+          const search = youtubeSearches.get(jid);
+
+          if (!search || Date.now() - search.createdAt > 30 * 60 * 1000) {
+            await send(jid, '⌛ Pesquisa de vídeo expirada. Faça outra com !playmp4 assunto.', msg);
+            break;
+          }
+
+          const selected = search.results[number - 1];
+          if (!selected) {
+            await send(jid, '❌ Número não encontrado.', msg);
+            break;
+          }
+
+          await send(jid, '🎬 Preparando vídeo MP4...', msg);
+
+          try {
+            const videoData = await downloadCreativeCommonsVideo(selected);
+            await sock.sendMessage(jid, {
+              video: videoData.buffer,
+              mimetype: 'video/mp4',
+              fileName: 'leo-stickers-play.mp4',
+              caption:
+                '🎬 *LÉO STICKERS — PLAY MP4*\n\n' +
+                'Título: ' + videoData.title + '\n' +
+                'Canal: ' + videoData.channel + '\n' +
+                'Origem: ' + videoData.url
+            }, { quoted: msg });
+          } catch (error) {
+            console.error('[PLAY VIDEO]', error?.stack || error);
+
+            const aviso = error.code === 'TOO_LONG'
+              ? '⏱️ Vídeo maior que 10 minutos.'
+              : error.code === 'VIDEO_SIZE'
+                ? '📦 Vídeo maior que 15 MB.'
+                : error.code === 'TOOL_MISSING'
+                  ? '❌ yt-dlp não encontrado.'
+                  : '❌ Falha ao preparar vídeo: ' + (error.message || 'erro desconhecido');
+
+            await send(jid, aviso + '\n' + selected.url, msg);
+          }
+          break;
+        }
+
+        await send(jid, '🔎 Pesquisando vídeos no YouTube...', msg);
+        try {
+          const results = await searchYouTube(playValue);
+          if (!results.length) {
+            await send(jid, 'Não encontrei vídeos para essa pesquisa.', msg);
+            break;
+          }
+
+          youtubeSearches.set(jid, {
+            results,
+            createdAt: Date.now()
+          });
+
+          const lines = results.map((item, index) =>
+            (index + 1) + '. ' + item.title + '\n' +
+            'Canal: ' + item.channel + '\n' +
+            'Duração: ' + item.duration + '\n' + item.url
+          );
+
+          await send(
+            jid,
+            '🎬 *RESULTADOS DE VÍDEO — YOUTUBE*\n\n' +
+            lines.join('\n\n') +
+            '\n\nPara receber em MP4, use !playmp4 número. Exemplo: !playmp4 1.',
+            msg
+          );
+        } catch (error) {
+          console.error('[PLAY VIDEO SEARCH]', error?.stack || error);
+          await send(jid, '❌ Erro na pesquisa: ' + (error.message || 'erro desconhecido'), msg);
+        }
+        break;
+      }
+
       case 'aceitarpack': {
         const senderJid = msg.key.fromMe
           ? (authState?.creds?.me?.id || msg.key.participant || jid)
@@ -1909,6 +2093,21 @@ switch (command) {
       case 'menuinfo':
         await send(jid, menuCategory(command), msg);
         break;
+
+      case 'latencia':
+      case 'latência': {
+        const started = Date.now();
+        try {
+          const marker = await sock.sendMessage(jid, { text: '🏓 Medindo latência local…' }, { quoted: msg });
+          const elapsed = Date.now() - started;
+          const report = `🏓 *LÉO STICKERS — LATÊNCIA*\n\nTempo de envio/ack local: *${elapsed} ms*\nConexão: *${sock?.user ? 'CONECTADO 🟢' : 'INICIALIZANDO 🟡'}*\n\n_Essa medida é o tempo até o Baileys concluir o envio/ack local; não representa um ping completo entre aparelhos._`;
+          try { await sock.sendMessage(jid, { text: report, edit: marker?.key }); }
+          catch { await send(jid, report, msg); }
+        } catch (error) {
+          await send(jid, `❌ Não consegui medir a latência: ${error?.message || error}`, msg);
+        }
+        break;
+      }
 
       case 'ping':
         await send(
@@ -2457,7 +2656,7 @@ function getMessageTimestampMs(msg) {
   return seconds >= 1_000_000_000_000 ? seconds : seconds * 1000;
 }
 
-// LEO_STICKERS_OUTGOING_TYPING_QUEUE_V1
+// LEO_STICKERS_OUTGOING_TYPING_QUEUE_V2
 function getOutgoingTextForPresence(content) {
   if (!content || typeof content !== 'object') return '';
   return [content.text, content.caption]
@@ -2466,8 +2665,7 @@ function getOutgoingTextForPresence(content) {
 }
 
 function estimateTypingIndicatorMs(text) {
-  // Referência: digitador rápido (~80 palavras/minuto, cerca de 8 caracteres/segundo).
-  // O tempo é limitado para não deixar conversas esperando excessivamente.
+  // Digitação rápida, com limite para não atrasar demais as respostas.
   const characters = [...String(text || '')].length;
   const estimated = Math.ceil((characters / 8) * 1000);
   return Math.min(3000, Math.max(700, estimated));
@@ -2477,7 +2675,10 @@ function installOutgoingMessageQueue(socket) {
   if (!socket || socket.__leoOutgoingQueueInstalled) return;
 
   const originalSendMessage = socket.sendMessage.bind(socket);
-  let sendQueue = Promise.resolve();
+  const pending = [];
+  const activeByChat = new Map();
+  let active = 0;
+  const MAX_CONCURRENT_SENDS = 2;
 
   Object.defineProperty(socket, '__leoOutgoingQueueInstalled', {
     value: true,
@@ -2485,38 +2686,83 @@ function installOutgoingMessageQueue(socket) {
     enumerable: false
   });
 
-  // Uma fila global: nenhuma chamada sendMessage começa enquanto outra não termina.
+  function pump() {
+    while (active < MAX_CONCURRENT_SENDS && pending.length) {
+      const job = pending.shift();
+      active++;
+      run(job).then(job.resolve, job.reject).finally(() => {
+        active--;
+        pump();
+      });
+    }
+  }
+
+  async function run(job) {
+    const { jid, content, options, ownerNoTyping: queuedOwnerNoTyping, sourceGroupJid, sourceTimestampMs } = job;
+    // A resposta pode ter ficado esperando na fila enquanto o grupo foi pausado.
+    // Revalida no momento do envio para descartar saídas antigas já enfileiradas.
+    if (sourceGroupJid && shouldIgnoreGroupTimestamp(sourceGroupJid, sourceTimestampMs)) {
+      console.log('[FILA SAÍDA] Resposta antiga descartada: mensagem enviada durante a pausa do grupo.');
+      return { skipped: true, reason: 'group-paused-backlog' };
+    }
+    const outgoingText = getOutgoingTextForPresence(content);
+    // O comando de latência deve responder imediatamente, sem indicador de digitação.
+    const isLatencyProbe = /^🏓\s*Medindo latência local/i.test(outgoingText);
+    const isEdit = Boolean(options && options.edit);
+    const ownerIsUsingThisChat = queuedOwnerNoTyping === true || socket.__leoOwnerChats?.has(jid) === true;
+    const useTyping = jid !== 'status@broadcast' && !isLatencyProbe && !isEdit &&
+      !ownerIsUsingThisChat &&
+      typeof socket.sendPresenceUpdate === 'function';
+
+    if (useTyping) {
+      const count = activeByChat.get(jid) || 0;
+      activeByChat.set(jid, count + 1);
+      if (count === 0) {
+        try { await socket.sendPresenceUpdate('composing', jid); }
+        catch (error) { console.warn('[DIGITAÇÃO] Não foi possível iniciar presença:', error?.message || error); }
+      }
+      await delay(estimateTypingIndicatorMs(outgoingText));
+    }
+
+    const sendStartedAt = performance.now();
+    try {
+      const result = await originalSendMessage(jid, content, options);
+      recordOutboundMessage(performance.now() - sendStartedAt, true);
+      return result;
+    } catch (error) {
+      recordOutboundMessage(performance.now() - sendStartedAt, false);
+      throw error;
+    } finally {
+      if (useTyping) {
+        const count = Math.max(0, (activeByChat.get(jid) || 1) - 1);
+        if (count === 0) {
+          activeByChat.delete(jid);
+          try { await socket.sendPresenceUpdate('paused', jid); }
+          catch (error) { console.warn('[DIGITAÇÃO] Não foi possível encerrar presença:', error?.message || error); }
+        } else {
+          activeByChat.set(jid, count);
+        }
+      }
+    }
+  }
+
+  // Até dois envios simultâneos: um comando não fica preso esperando toda a
+  // digitação/resposta anterior. As mensagens recebidas continuam sendo tratadas.
   socket.sendMessage = function (jid, content, options) {
-    const task = sendQueue.then(async () => {
-      const outgoingText = getOutgoingTextForPresence(content);
-      let composingStarted = false;
-
-      if (jid !== 'status@broadcast' && typeof socket.sendPresenceUpdate === 'function') {
-        try {
-          await socket.sendPresenceUpdate('composing', jid);
-          composingStarted = true;
-          await delay(estimateTypingIndicatorMs(outgoingText));
-        } catch (error) {
-          console.warn('[DIGITAÇÃO] Não foi possível atualizar presença:', error?.message || error);
-        }
-      }
-
-      try {
-        return await originalSendMessage(jid, content, options);
-      } finally {
-        if (composingStarted) {
-          try {
-            await socket.sendPresenceUpdate('paused', jid);
-          } catch (error) {
-            console.warn('[DIGITAÇÃO] Não foi possível encerrar presença:', error?.message || error);
-          }
-        }
-      }
+    return new Promise((resolve, reject) => {
+      const sourceContext = ownerCommandContext.getStore() || {};
+      pending.push({
+        jid,
+        content,
+        options,
+        ownerNoTyping: sourceContext.owner === true,
+        sourceGroupJid: sourceContext.sourceGroupJid || '',
+        sourceTimestampMs: sourceContext.sourceTimestampMs ?? null,
+        resolve,
+        reject
+      });
+      pump();
     });
-
-    // Uma falha não pode travar os próximos envios da fila.
-    sendQueue = task.catch(() => undefined);
-    return task;
   };
 }
 
@@ -2741,20 +2987,35 @@ async function start(baileys) {
 
         if (type !== 'notify') return;
 
+        // Registra !grupo off/on de todo o lote antes de processar qualquer
+        // mensagem. Isso impede a fila do próprio lote de adiantar mensagens antigas.
+        const ownerForPreapply = authState?.creds?.me?.lid || authState?.creds?.me?.id || '';
+        const preappliedToggles = preapplyGroupControlCommands(messages, isOwner, ownerForPreapply, config.prefix, messageCutoffTimestampMs);
+        if (preappliedToggles > 0) {
+          console.log(`[CONTROLE] ${preappliedToggles} comando(s) de pausa/reativação pré-registrado(s).`);
+        }
+
         for (const msg of messages) {
           const sentAtMs = getMessageTimestampMs(msg);
           if (sentAtMs !== null && sentAtMs < messageCutoffTimestampMs) {
             console.log('[IGNORADA] Mensagem enviada antes do início desta conexão.');
             continue;
           }
-          recordInboundMessage(); // LEO_CONTROL_MESSAGE_METRICS_V1
+          recordInboundMessage(msg, config.prefix); // LEO_CONTROL_MESSAGE_METRICS_V2
           const controlRemoteJid = msg.key?.remoteJid || '';
-          if (controlRemoteJid.endsWith('@g.us') && !isGroupBotEnabled(controlRemoteJid)) {
-            console.log('[CONTROLE] Mensagem ignorada: bot pausado neste grupo.');
+          const controlSenderJid = msg.key?.participant || (msg.key?.fromMe ? (authState?.creds?.me?.lid || authState?.creds?.me?.id || controlRemoteJid) : controlRemoteJid);
+          // O painel precisa ser tratado antes do bloqueio de grupo pausado,
+          // para que o proprietário consiga reativar um grupo pelo próprio grupo.
+          const panelHandled = await ownerCommandContext.run(
+            { owner: isOwner(controlSenderJid) },
+            () => handleControlPanelMessage(currentSock, msg, { isOwner, senderJid: controlSenderJid, prefix: config.prefix })
+          );
+          if (panelHandled) continue; // LEO_CONTROL_PANEL_HOOK_V3
+          if (controlRemoteJid.endsWith('@g.us') && shouldIgnoreGroupMessage(controlRemoteJid, msg)) {
+            console.log('[CONTROLE] Mensagem descartada: enviada durante a pausa do grupo ou sem horário verificável.');
             continue;
           }
           if (await handleMutedMessage(currentSock, msg)) continue; // LEO_STICKERS_COMMUNITY_MUTE_HOOK_V1
-          if (await handleControlPanelMessage(currentSock, msg, { isOwner, senderJid: controlRemoteJid, prefix: config.prefix })) continue; // LEO_CONTROL_PANEL_HOOK_V1
           if (await handleApplicantPrivateMessage(currentSock, msg)) continue;
           console.log(
             '[IDENTIFICADOR REMETENTE]',
@@ -2814,7 +3075,20 @@ async function start(baileys) {
           }
 
           await autoSaveIncomingSticker(msg);
-          await handleCommand(msg);
+          // O dono não recebe indicador de digitando; usuários comuns continuam recebendo.
+          const commandTextForPresence = getText(msg);
+          const ownerSenderForPresence = msg.key?.fromMe
+            ? (authState?.creds?.me?.lid || authState?.creds?.me?.id || msg.key?.participant || controlRemoteJid)
+            : (msg.key?.participant || controlRemoteJid);
+          const ownerNoTyping = isOwner(ownerSenderForPresence);
+          await ownerCommandContext.run(
+            {
+              owner: ownerNoTyping,
+              sourceGroupJid: controlRemoteJid.endsWith('@g.us') ? controlRemoteJid : '',
+              sourceTimestampMs: sentAtMs
+            },
+            () => handleCommand(msg)
+          );
         }
       }
     );

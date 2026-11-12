@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { performance, monitorEventLoopDelay } from 'node:perf_hooks';
 import { sendInteractiveMessage } from './interactive-buttons.js';
 
@@ -7,10 +8,18 @@ const STATE_FILE = path.resolve(process.env.LEO_GROUP_CONTROL_FILE || './group-b
 const startedAt = Date.now();
 const loopDelay = monitorEventLoopDelay({ resolution: 20 });
 loopDelay.enable();
+const eventLoopUtilizationStart = performance.eventLoopUtilization();
 let messagesReceived = 0;
+let commandsReceived = 0;
 let reconnects = 0;
 let wasConnected = false;
+let outgoingSucceeded = 0;
+let outgoingFailed = 0;
 let lastSendAckMs = null;
+let maxSendAckMs = 0;
+let totalSendAckMs = 0;
+const sendAckSamples = [];
+const MAX_SEND_ACK_SAMPLES = 100;
 const pausedNoticeAt = new Map();
 
 function readState() {
@@ -39,13 +48,36 @@ export function isGroupBotEnabled(groupJid) {
   return saved?.enabled !== false;
 }
 
-export function setGroupBotEnabled(groupJid, enabled, groupName = '', changedBy = '') {
+// Retorna o instante da última reativação. Mensagens anteriores ou iguais a
+// esse marco foram enviadas durante a pausa e não devem ser processadas.
+export function getGroupBotEnabledAt(groupJid) {
+  if (!String(groupJid || '').endsWith('@g.us')) return 0;
+  const value = Number(readState().groups[groupJid]?.enabledAtMs);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function getMessageTimestampMs(msg) {
+  const raw = msg?.messageTimestamp;
+  const seconds = raw && typeof raw.toNumber === 'function' ? raw.toNumber() : Number(raw);
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  return seconds >= 1_000_000_000_000 ? seconds : seconds * 1000;
+}
+
+export function setGroupBotEnabled(groupJid, enabled, groupName = '', changedBy = '', changedAtMs = null) {
   if (!String(groupJid || '').endsWith('@g.us')) throw new Error('ID de grupo inválido.');
   const state = readState();
   const old = state.groups[groupJid] || {};
+  const actionAtMs = Number(changedAtMs) > 0 ? Number(changedAtMs) : Date.now();
+  const wasEnabled = old.enabled !== false;
   state.groups[groupJid] = {
     ...old,
     enabled: Boolean(enabled),
+    // Marca o início e o fim da pausa. Isso permite descartar somente mensagens
+    // enviadas durante a pausa, mesmo que elas só sejam processadas depois do !grupo on.
+    pausedAtMs: enabled
+      ? (Number(old.pausedAtMs) > 0 ? Number(old.pausedAtMs) : 0)
+      : (wasEnabled || !(Number(old.pausedAtMs) > 0) ? actionAtMs : Number(old.pausedAtMs)),
+    enabledAtMs: enabled ? actionAtMs : (Number(old.enabledAtMs) > 0 ? Number(old.enabledAtMs) : 0),
     groupName: String(groupName || old.groupName || '').slice(0, 100),
     updatedAt: new Date().toISOString(),
     updatedBy: String(changedBy || '').slice(0, 100)
@@ -54,7 +86,94 @@ export function setGroupBotEnabled(groupJid, enabled, groupName = '', changedBy 
   return state.groups[groupJid];
 }
 
-export function recordInboundMessage() { messagesReceived++; }
+// Decide com base no horário original da mensagem, não no momento em que o
+// handler consegue processá-la. Mensagens do intervalo off -> on são descartadas.
+export function shouldIgnoreGroupTimestamp(groupJid, timestamp) {
+  if (!String(groupJid || '').endsWith('@g.us')) return false;
+  const saved = readState().groups[groupJid] || {};
+  const timestampMs = Number(timestamp);
+  const validTimestamp = Number.isFinite(timestampMs) && timestampMs > 0 ? timestampMs : null;
+  const pausedAt = Number(saved.pausedAtMs) || 0;
+  const enabledAt = Number(saved.enabledAtMs) || 0;
+
+  if (saved.enabled === false) {
+    // Enquanto pausado, não deixar mensagens novas entrarem no processamento.
+    // Mensagens anteriores ao instante de pausa ainda podem terminar.
+    return validTimestamp === null || pausedAt <= 0 || validTimestamp >= pausedAt;
+  }
+
+  if (enabledAt > 0) {
+    // Conservador: sem timestamp não é possível provar que a mensagem é nova.
+    if (validTimestamp === null) return true;
+    // Compatibilidade com instalações anteriores que só guardavam enabledAtMs.
+    if (pausedAt <= 0) return validTimestamp <= enabledAt;
+    return validTimestamp >= pausedAt && validTimestamp <= enabledAt;
+  }
+  return false;
+}
+
+export function shouldIgnoreGroupMessage(groupJid, msg) {
+  return shouldIgnoreGroupTimestamp(groupJid, getMessageTimestampMs(msg));
+}
+
+// Pré-registra toggles do proprietário antes do primeiro await do evento.
+// Assim, mensagens antigas no mesmo lote já veem o marco de reativação.
+export function preapplyGroupControlCommands(messages, isOwnerFn, ownerJid = '', prefix = '!', minimumTimestampMs = 0) {
+  if (!Array.isArray(messages) || typeof isOwnerFn !== 'function') return 0;
+  const escapedPrefix = String(prefix || '!').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const togglePattern = new RegExp(`^${escapedPrefix}grupo\\s+(on|off)$`, 'i');
+  let applied = 0;
+  for (const msg of messages) {
+    const remoteJid = msg?.key?.remoteJid || '';
+    if (!remoteJid.endsWith('@g.us')) continue;
+    const senderJid = msg?.key?.participant || (msg?.key?.fromMe ? ownerJid : remoteJid);
+    if (!isOwnerFn(senderJid)) continue;
+    const match = getIncomingText(msg).match(togglePattern);
+    if (!match) continue;
+    const enabled = match[1].toLowerCase() === 'on';
+    const timestamp = getMessageTimestampMs(msg);
+    if (timestamp === null || (Number(minimumTimestampMs) > 0 && timestamp < Number(minimumTimestampMs))) continue;
+    const saved = readState().groups[remoteJid] || {};
+    setGroupBotEnabled(remoteJid, enabled, saved.groupName || '', senderJid, timestamp);
+    applied++;
+  }
+  return applied;
+}
+
+function getIncomingText(msg) {
+  let current = msg?.message || {};
+  for (let i = 0; i < 12; i++) {
+    const next = current.ephemeralMessage?.message || current.viewOnceMessage?.message ||
+      current.viewOnceMessageV2?.message || current.viewOnceMessageV2Extension?.message ||
+      current.documentWithCaptionMessage?.message || current.deviceSentMessage?.message ||
+      current.editedMessage?.message || current.messageContextInfo?.message;
+    if (!next) break;
+    current = next;
+  }
+  return String(current.conversation || current.extendedTextMessage?.text ||
+    current.imageMessage?.caption || current.videoMessage?.caption ||
+    current.documentMessage?.caption || current.buttonsResponseMessage?.selectedDisplayText || '').trim();
+}
+
+export function recordInboundMessage(msg, prefix = '!') {
+  messagesReceived++;
+  const text = getIncomingText(msg);
+  if (text && prefix && text.startsWith(String(prefix))) commandsReceived++;
+}
+
+export function recordOutboundMessage(durationMs, success = true) {
+  if (success) {
+    outgoingSucceeded++;
+    const value = Math.max(0, Number(durationMs) || 0);
+    lastSendAckMs = value;
+    maxSendAckMs = Math.max(maxSendAckMs, value);
+    totalSendAckMs += value;
+    sendAckSamples.push(value);
+    if (sendAckSamples.length > MAX_SEND_ACK_SAMPLES) sendAckSamples.shift();
+  } else {
+    outgoingFailed++;
+  }
+}
 
 export function recordConnectionUpdate(update = {}) {
   if (update.connection === 'open') {
@@ -150,8 +269,8 @@ async function sendGroupMenu(sock, chatJid, page = 0) {
   if (currentPage < pageCount - 1) rows.push({ id: `ls_page_${currentPage + 1}`, title: '➡️ Próxima página', description: 'Ver mais grupos' });
   const state = readState();
   const savedPaused = Object.entries(state.groups).filter(([, item]) => item?.enabled === false).length;
-  const manualCommands = visible.map(group => `• ${group.name}\n  !grupo ${group.enabled ? 'off' : 'on'} ${group.jid}`).join('\n');
-  const text = `⚙️ *CONTROLE DE GRUPOS — LÉO STICKERS*\n\nGrupos encontrados: *${groups.length}*\nAtivos: *${groups.filter(g => g.enabled).length}*\nPausados: *${groups.filter(g => !g.enabled).length}*\nConfigurações de pausa salvas: *${savedPaused}*\n\nSelecione um grupo para alterar o funcionamento do bot.\nPágina *${currentPage + 1}/${pageCount}*\n\nSe os botões não aparecerem, use o comando indicado para o grupo desejado:\n${manualCommands || 'Nenhum grupo disponível nesta página.'}`;
+  const manualCommands = visible.map(group => `• *${group.name}* — !grupo ${group.enabled ? 'off' : 'on'} ${group.name}`).join('\n');
+  const text = `⚙️ *CONTROLE DE GRUPOS — LÉO STICKERS*\n\nGrupos encontrados: *${groups.length}*\nAtivos: *${groups.filter(g => g.enabled).length}*\nPausados: *${groups.filter(g => !g.enabled).length}*\nConfigurações de pausa salvas: *${savedPaused}*\n\nSelecione um grupo para alterar o funcionamento do bot.\nPágina *${currentPage + 1}/${pageCount}*\n\nSe os botões não aparecerem, use !grupo on/off seguido do nome exato do grupo:\n${manualCommands || 'Nenhum grupo disponível nesta página.'}`;
   try {
     await sendInteractiveMessage(sock, chatJid, {
       text,
@@ -161,8 +280,8 @@ async function sendGroupMenu(sock, chatJid, page = 0) {
       }) }]
     });
   } catch (error) {
-    const lines = groups.slice(0, 30).map((g, i) => `${i + 1}. ${g.enabled ? '🟢' : '🔴'} ${g.name}\n   !grupo ${g.enabled ? 'off' : 'on'} ${g.jid}`).join('\n');
-    await sock.sendMessage(chatJid, { text: `${text}\n\n*Alternativa sem botões:*\n${lines || 'Nenhum grupo encontrado.'}\n\nPara abrir o seletor novamente, envie !grupos.` });
+    const lines = groups.slice(0, 30).map((g, i) => `${i + 1}. ${g.enabled ? '🟢' : '🔴'} *${g.name}* — !grupo ${g.enabled ? 'off' : 'on'} ${g.name}`).join('\n');
+    await sock.sendMessage(chatJid, { text: `${text}\n\n*Alternativa sem botões (sem exibir IDs):*\n${lines || 'Nenhum grupo encontrado.'}\n\nPara abrir o seletor novamente, envie !grupos.` });
     console.warn('[CONTROLE] Não foi possível enviar menu interativo:', error?.message || error);
   }
 }
@@ -187,19 +306,103 @@ async function sendGroupActions(sock, chatJid, groupJid, groupName) {
 }
 
 async function sendStatus(sock, chatJid) {
-  let groupCount = null;
-  try { groupCount = Object.keys(await getGroupsObject(sock) || {}).filter(jid => jid.endsWith('@g.us')).length; } catch {}
-  const mem = process.memoryUsage();
-  const eventLoopP95 = Number(loopDelay.percentile(95) / 1e6).toFixed(1);
+  const statusStartedAt = performance.now();
+  let groupsObject = null;
+  let groupFetchMs = null;
+  try {
+    const groupFetchStart = performance.now();
+    groupsObject = await getGroupsObject(sock);
+    groupFetchMs = performance.now() - groupFetchStart;
+  } catch {}
+
+  const groupIds = groupsObject
+    ? Object.keys(groupsObject).filter(jid => jid.endsWith('@g.us'))
+    : [];
+  const groupCount = groupsObject ? groupIds.length : null;
   const state = readState();
-  const paused = Object.values(state.groups).filter(group => group?.enabled === false).length;
-  const uptime = formatDuration(Date.now() - startedAt);
+  const pausedCurrentGroups = groupsObject
+    ? groupIds.filter(jid => state.groups[jid]?.enabled === false).length
+    : null;
+  const savedPaused = Object.values(state.groups).filter(group => group?.enabled === false).length;
+  const stalePaused = pausedCurrentGroups == null ? null : Math.max(0, savedPaused - pausedCurrentGroups);
+
+  const mem = process.memoryUsage();
+  const uptimeMs = Date.now() - startedAt;
+  const uptime = formatDuration(uptimeMs);
+  const heapUsagePct = mem.heapTotal > 0 ? (mem.heapUsed / mem.heapTotal) * 100 : 0;
+  const cpu = process.cpuUsage();
+  const cpuMs = (cpu.user + cpu.system) / 1000;
+  const cpuAveragePct = uptimeMs > 0 ? (cpuMs / uptimeMs) * 100 : 0;
+  const elu = performance.eventLoopUtilization(eventLoopUtilizationStart);
+  const loopP50 = Number(loopDelay.percentile(50) / 1e6);
+  const loopP95 = Number(loopDelay.percentile(95) / 1e6);
+  const loopMax = Number(loopDelay.max / 1e6);
+    const ackSorted = [...sendAckSamples].sort((a, b) => a - b);
+  const ackP95 = ackSorted.length ? ackSorted[Math.min(ackSorted.length - 1, Math.ceil(ackSorted.length * 0.95) - 1)] : null;
+  const ackAverage = outgoingSucceeded ? totalSendAckMs / outgoingSucceeded : null;
+  const messagesPerMinute = uptimeMs > 0 ? messagesReceived / (uptimeMs / 60000) : 0;
+  const commandsPerMinute = uptimeMs > 0 ? commandsReceived / (uptimeMs / 60000) : 0;
+  const load = os.loadavg();
+  const cpuCount = os.cpus()?.length || 0;
+  const memoryRssPct = os.totalmem() > 0 ? (mem.rss / os.totalmem()) * 100 : null;
+  const externalPct = mem.heapTotal + mem.external > 0 ? (mem.external / (mem.heapTotal + mem.external)) * 100 : 0;
+
   let placeholder;
-  const sendStart = performance.now();
-  try { placeholder = await sock.sendMessage(chatJid, { text: '🦊 Coletando status do Léo Stickers…' }); }
+  const placeholderStart = performance.now();
+  try { placeholder = await sock.sendMessage(chatJid, { text: '🦊 Coletando 37 indicadores do Léo Stickers…' }); }
   catch (error) { console.warn('[STATUS] Falha ao enviar marcador:', error?.message || error); return; }
-  lastSendAckMs = performance.now() - sendStart;
-  const finalText = `🦊 *LÉO STICKERS — STATUS*\n\nConexão: *${sock.user ? 'CONECTADO 🟢' : 'INICIALIZANDO 🟡'}*\nTempo ligado neste processo: *${uptime}*\nMemória RSS: *${bytesToMb(mem.rss)}*\nHeap usado: *${bytesToMb(mem.heapUsed)}*\nMensagens recebidas: *${messagesReceived}*\nReconexões após a primeira conexão: *${reconnects}*\nGrupos conectados: *${groupCount == null ? 'indisponível' : groupCount}*\nGrupos pausados: *${paused}*\nAtraso do event loop (p95): *${eventLoopP95} ms*\nTempo até confirmação local do envio: *${lastSendAckMs.toFixed(1)} ms*\n\n_Essa medição é o tempo até o Baileys concluir o envio/ack local, não um ping completo da internet até o aparelho._`;
+  const placeholderAckMs = performance.now() - placeholderStart;
+  lastSendAckMs = placeholderAckMs;
+
+  const fmtMs = value => value == null || !Number.isFinite(value) ? 'indisponível' : `${value.toFixed(1)} ms`;
+  const fmtPct = value => value == null || !Number.isFinite(value) ? 'indisponível' : `${value.toFixed(1)}%`;
+  const fmtMb = value => bytesToMb(value);
+  const fmtSec = value => `${(value / 1000).toFixed(1)} s`;
+  const finalText = `🦊 *LÉO STICKERS — STATUS AVANÇADO*\n` +
+    `_${new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}_\n\n` +
+    `*🟢 CONEXÃO E TEMPO*\n` +
+    `1. Conexão WhatsApp: *${sock.user ? 'CONECTADO 🟢' : 'INICIALIZANDO 🟡'}*\n` +
+    `2. Identidade da sessão: *${sock.user ? 'autenticada' : 'não disponível'}*\n` +
+    `3. Tempo ligado neste processo: *${uptime}*\n` +
+    `4. Reconexões após a primeira conexão: *${reconnects}*\n` +
+    `5. Grupos conectados: *${groupCount == null ? 'indisponível' : groupCount}*\n` +
+    `6. Grupos pausados: *${pausedCurrentGroups == null ? 'indisponível' : pausedCurrentGroups}*\n` +
+    `7. Pausas salvas de grupos não encontrados: *${stalePaused == null ? 'indisponível' : stalePaused}*\n` +
+    `8. Tempo para consultar grupos: *${fmtMs(groupFetchMs)}*\n\n` +
+    `*📨 MOVIMENTO DO BOT*\n` +
+    `9. Mensagens recebidas desde o início: *${messagesReceived}*\n` +
+    `10. Comandos identificados pelo prefixo: *${commandsReceived}*\n` +
+    `11. Média de mensagens recebidas/min: *${messagesPerMinute.toFixed(1)}*\n` +
+    `12. Média de comandos recebidos/min: *${commandsPerMinute.toFixed(1)}*\n` +
+    `13. Envios concluídos sem erro pelo Baileys: *${outgoingSucceeded}*\n` +
+    `14. Envios com erro: *${outgoingFailed}*\n\n` +
+    `*⚡ TEMPO DE RESPOSTA E EVENT LOOP*\n` +
+    `15. Última chamada de envio local: *${fmtMs(lastSendAckMs)}*\n` +
+    `16. Tempo médio da chamada de envio: *${fmtMs(ackAverage)}*\n` +
+    `17. Tempo p95 (últimos ${sendAckSamples.length} envios): *${fmtMs(ackP95)}*\n` +
+    `18. Maior tempo de envio local: *${fmtMs(maxSendAckMs || null)}*\n` +
+    `19. Event Loop p50: *${fmtMs(loopP50)}*\n` +
+    `20. Event Loop p95: *${fmtMs(loopP95)}*\n` +
+    `21. Event Loop máximo desde o início: *${fmtMs(loopMax)}*\n` +
+    `22. Utilização do Event Loop: *${fmtPct(elu.utilization * 100)}*\n\n` +
+    `*🧠 MEMÓRIA E CPU*\n` +
+    `23. RAM RSS do processo: *${fmtMb(mem.rss)}* (${fmtPct(memoryRssPct)} da RAM do aparelho)\n` +
+    `24. Heap usado/total: *${fmtMb(mem.heapUsed)} / ${fmtMb(mem.heapTotal)}*\n` +
+    `25. Ocupação do Heap: *${fmtPct(heapUsagePct)}*\n` +
+    `26. Memória externa: *${fmtMb(mem.external)}* (${fmtPct(externalPct)} do conjunto externo + heap)\n` +
+    `27. ArrayBuffers: *${fmtMb(mem.arrayBuffers || 0)}*\n` +
+    `28. CPU média do processo: *${fmtPct(cpuAveragePct)}* (desde o início; pode passar de 100% em vários núcleos)\n` +
+    `29. CPU acumulada — usuário/sistema: *${fmtSec(cpu.user / 1000)} / ${fmtSec(cpu.system / 1000)}*\n\n` +
+    `*🛠️ AMBIENTE*\n` +
+    `30. Node.js: *${process.version}*\n` +
+    `31. Sistema/arquitetura: *${process.platform} / ${process.arch}*\n` +
+    `32. Núcleos de CPU detectados: *${cpuCount || 'indisponível'}*\n` +
+    `33. Carga do sistema (1/5/15 min): *${load.map(n => n.toFixed(2)).join(' / ')}*\n` +
+    `34. PID do processo: *${process.pid}*\n` +
+    `35. Memória livre do aparelho: *${fmtMb(os.freemem())}*\n` +
+    `36. Memória total do aparelho: *${fmtMb(os.totalmem())}*\n` +
+    `37. Tempo para montar este relatório: *${fmtMs(performance.now() - statusStartedAt)}*\n\n` +
+    `_Contadores e picos reiniciam quando o processo reinicia. Os tempos medem a duração local da chamada sendMessage do Baileys; não são ping nem confirmação de entrega ao aparelho. Event Loop é medido desde o início do processo; carga do sistema depende do suporte do Android._`;
   try {
     await sock.sendMessage(chatJid, { text: finalText, edit: placeholder?.key });
   } catch {
@@ -209,8 +412,11 @@ async function sendStatus(sock, chatJid) {
 
 export async function handleControlPanelMessage(sock, msg, context = {}) {
   const remoteJid = msg?.key?.remoteJid || '';
-  if (!remoteJid || remoteJid.endsWith('@g.us') || remoteJid === 'status@broadcast' || msg?.key?.fromMe) return false;
-  const isOwner = typeof context.isOwner === 'function' && context.isOwner(context.senderJid || remoteJid);
+  if (!remoteJid || remoteJid === 'status@broadcast') return false;
+  // Em grupos, o remetente real vem de key.participant (pode ser @lid).
+  // Não usar remoteJid como remetente, pois ele é o ID do grupo.
+  const senderJid = context.senderJid || msg?.key?.participant || (msg?.key?.fromMe ? context.ownerJid : remoteJid);
+  const isOwner = typeof context.isOwner === 'function' && context.isOwner(senderJid);
   const content = msg?.message || {};
   let current = content;
   for (let i = 0; i < 10; i++) {
@@ -224,7 +430,10 @@ export async function handleControlPanelMessage(sock, msg, context = {}) {
   const normalized = text.toLowerCase();
   const statusCommand = normalized === `${prefix}status` || normalized === '!status';
   const groupsCommand = normalized === `${prefix}grupos` || normalized === '!grupos';
-  const manualGroupMatch = normalized.match(/^!grupo\s+(on|off)\s+(\d{5,25}@g\.us)$/i);
+  const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Aceita !grupo on/off sem alvo (atua no grupo da própria mensagem)
+  // e também mantém !grupo on/off NOME para controlar outro grupo.
+  const manualGroupMatch = normalized.match(new RegExp(`^${escapedPrefix}grupo\\s+(on|off)(?:\\s+(.+))?$`, 'i'));
   if (!isOwner && (statusCommand || groupsCommand || action.startsWith('ls_') || manualGroupMatch)) {
     await sock.sendMessage(remoteJid, { text: '⛔ Este painel é exclusivo do proprietário do bot.' });
     return true;
@@ -232,12 +441,39 @@ export async function handleControlPanelMessage(sock, msg, context = {}) {
   if (statusCommand) { await sendStatus(sock, remoteJid); return true; }
   if (groupsCommand || action === 'ls_groups') { await sendGroupMenu(sock, remoteJid, 0); return true; }
   if (manualGroupMatch) {
-    const groupJid = manualGroupMatch[2];
-    let name = groupJid;
-    try { name = (await sock.groupMetadata(groupJid)).subject || name; } catch {}
-    const value = setGroupBotEnabled(groupJid, manualGroupMatch[1] === 'on', name, context.senderJid || remoteJid);
+    const requested = String(manualGroupMatch[2] || '').trim();
+    let groupJid = requested;
+    let name = requested;
+
+    // Sem nome/ID: controla o grupo onde o proprietário enviou o comando.
+    if (!requested) {
+      if (!remoteJid.endsWith('@g.us')) {
+        await sock.sendMessage(remoteJid, { text: '❌ Para usar !grupo on/off sem nome, envie o comando dentro do próprio grupo. Para controlar outro grupo, use !grupos.' });
+        return true;
+      }
+      groupJid = remoteJid;
+      name = remoteJid;
+      try { name = (await sock.groupMetadata(groupJid)).subject || name; } catch {}
+    } else if (!requested.endsWith('@g.us')) {
+      // Mantém compatibilidade com a forma antiga: !grupo on/off NOME.
+      const allGroups = await getGroupsObject(sock);
+      const matches = Object.entries(allGroups || {}).filter(([jid, meta]) =>
+        jid.endsWith('@g.us') && String(meta?.subject || meta?.name || '').trim().toLocaleLowerCase('pt-BR') === requested.toLocaleLowerCase('pt-BR')
+      );
+      if (matches.length !== 1) {
+        await sock.sendMessage(remoteJid, { text: matches.length > 1 ? '⚠️ Existem grupos com nomes iguais. Use os botões do !grupos para escolher com segurança.' : '❌ Não encontrei um grupo com esse nome exato. Confira a grafia e tente novamente.' });
+        return true;
+      }
+      groupJid = matches[0][0];
+      name = String(matches[0][1]?.subject || matches[0][1]?.name || requested);
+    } else {
+      try { name = (await sock.groupMetadata(groupJid)).subject || name; } catch {}
+    }
+
+    const enabled = manualGroupMatch[1] === 'on';
+    const value = setGroupBotEnabled(groupJid, enabled, name, context.senderJid || remoteJid, getMessageTimestampMs(msg));
     if (value.enabled) await reconcileAfterActivation(sock);
-    await sock.sendMessage(remoteJid, { text: `${value.enabled ? '🟢 Bot ativado' : '🔴 Bot desativado'} em *${value.groupName || groupJid}*.` });
+    await sock.sendMessage(remoteJid, { text: `${value.enabled ? '🟢 Bot ativado' : '🔴 Bot desativado'} em *${value.groupName || groupJid}*.${requested ? '' : '\n\nEste comando controlou somente o grupo atual.'}` });
     return true;
   }
   if (action.startsWith('ls_page_')) {
@@ -259,7 +495,7 @@ export async function handleControlPanelMessage(sock, msg, context = {}) {
     if (!groupJid) { await sock.sendMessage(remoteJid, { text: 'ID de grupo inválido. Abra !grupos novamente.' }); return true; }
     let name = groupJid;
     try { name = (await sock.groupMetadata(groupJid)).subject || name; } catch {}
-    const value = setGroupBotEnabled(groupJid, enabled, name, context.senderJid || remoteJid);
+    const value = setGroupBotEnabled(groupJid, enabled, name, context.senderJid || remoteJid, getMessageTimestampMs(msg));
     if (value.enabled) await reconcileAfterActivation(sock);
     await sock.sendMessage(remoteJid, { text: `${value.enabled ? '🟢 Bot ativado' : '🔴 Bot desativado'} em *${value.groupName || groupJid}*.\n\nAs configurações de entrada e apresentação deste grupo foram preservadas.` });
     await sendGroupActions(sock, remoteJid, groupJid, name);

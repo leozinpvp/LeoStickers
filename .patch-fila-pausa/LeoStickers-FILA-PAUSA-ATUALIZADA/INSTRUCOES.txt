@@ -1,0 +1,39 @@
+LEO STICKERS — CORREÇÃO DA FILA DURANTE PAUSA DE GRUPO
+
+Esta atualização substitui a tentativa anterior de ignorar mensagens durante
+!grupo off. Ela corrige três pontos:
+
+1. Pré-registra !grupo off/on do lote antes de começar a processar as mensagens.
+2. Grava o início e o fim da pausa. Mensagens cujo horário original fica dentro
+do intervalo entre off e on são descartadas quando chegarem atrasadas.
+3. Revalida a mensagem na entrada do comando e na hora em que uma resposta sai
+da fila de envio. Respostas antigas que ainda estavam aguardando na fila também
+são descartadas, em vez de serem enviadas minutos depois.
+
+O painel !grupos e os comandos !grupo off / !grupo on continuam disponíveis.
+Mensagens enviadas antes da pausa e mensagens novas depois da reativação não
+são descartadas por esse filtro. Como o horário do WhatsApp tem precisão de
+segundos, outras mensagens no mesmo segundo do comando de reativação também
+podem ser consideradas parte da pausa.
+
+INSTALAÇÃO NO TERMUX
+
+1. Pare o bot com Ctrl+C.
+2. Deixe o ZIP em ~/storage/downloads/.
+3. Execute os comandos abaixo:
+
+   mkdir -p ~/BotFigurinhas/.patch-fila-pausa
+   unzip -o ~/storage/downloads/LeoStickers-FILA-PAUSA-ATUALIZADA.zip -d ~/BotFigurinhas/.patch-fila-pausa
+   bash ~/BotFigurinhas/.patch-fila-pausa/LeoStickers-FILA-PAUSA-ATUALIZADA/aplicar.sh
+
+4. Inicie:
+
+   cd ~/BotFigurinhas
+   bash start-bot.sh
+
+O script cria cópias de segurança de index.js e control-panel.js antes de
+substituí-los. Só esses dois arquivos são alterados; configurações, bancos,
+sessão, mídias e dependências ficam intactos.
+
+Se a validação de sintaxe falhar depois da cópia, o próprio script restaura os
+arquivos de backup.

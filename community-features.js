@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { searchGiphyGif, downloadGiphyGif } from './giphy-library.js';
-import { findThematicGif } from './gif-matcher.js';
+import { findThematicGif, expandGifQueries } from './gif-matcher.js';
 
 const DATA_FILE = path.resolve('./community-data.json');
 let cachedData = null;
@@ -20,25 +20,82 @@ export const COMMUNITY_COMMANDS = [
 ];
 const COUPLE_IMAGE_DIR = path.resolve('./assets/casal');
 export const COUPLE_GIF_QUERIES = Object.freeze({
-  aceitarcasamento: ['anime couple happy wedding yes', 'anime wedding celebration couple'],
-  recusarcasamento: ['anime gentle rejection embarrassed reaction', 'anime heartbreak sad reaction'],
-  divorcio: ['anime couple breakup dramatic scene', 'anime dramatic farewell scene'],
-  meucasal: ['anime couple holding hands cute scene', 'anime romantic couple together'],
-  casados: ['anime wedding couple celebration', 'anime married couple cute scene'],
-  tempocasados: ['anime couple anniversary celebration', 'anime couple growing old together'],
-  bodas: ['anime wedding anniversary flowers couple', 'anime couple anniversary happy'],
-  perfilcasal: ['anime couple profile heart romantic', 'anime couple cute pose together'],
-  beijarpar: ['anime couple kiss scene', 'anime romantic kiss'],
-  abracarpar: ['anime couple hug scene', 'anime friends warm hug'],
-  elogiarpar: ['anime blushing after compliment couple', 'anime shy romantic reaction'],
-  declaracao: ['anime love confession scene', 'anime romantic confession under stars'],
-  presentepar: ['anime couple giving present surprise', 'anime gift surprise reaction'],
-  encontro: ['anime couple date scene', 'anime romantic date night'],
-  promessapar: ['anime pinky promise couple scene', 'anime couple promise friendship'],
-  renovarvotos: ['anime wedding vow renewal couple', 'anime romantic promise couple'],
-  mimo: ['anime cute couple affection scene', 'anime couple caring for each other'],
-  ciumes: ['anime jealous girlfriend funny reaction', 'anime jealous boyfriend reaction'],
-  sorteiodata: ['anime couple lucky date reaction', 'anime romantic date idea scene']
+  "aceitarcasamento": [
+    "anime couple happy wedding yes scene",
+    "anime wedding celebration couple"
+  ],
+  "recusarcasamento": [
+    "anime gentle rejection awkward scene",
+    "anime heartbreak rejection scene"
+  ],
+  "divorcio": [
+    "anime couple breakup farewell scene",
+    "anime dramatic separation scene"
+  ],
+  "meucasal": [
+    "anime couple holding hands romantic",
+    "anime couple walking together scene"
+  ],
+  "casados": [
+    "anime wedding couple celebration",
+    "anime married couple happy scene"
+  ],
+  "tempocasados": [
+    "anime couple growing older together",
+    "anime couple anniversary montage"
+  ],
+  "bodas": [
+    "anime couple anniversary flowers scene",
+    "anime wedding anniversary scene"
+  ],
+  "perfilcasal": [
+    "anime couple pose romantic together",
+    "anime couple profile heart scene"
+  ],
+  "beijarpar": [
+    "anime couple romantic kiss scene",
+    "Horimiya anime couple kissing"
+  ],
+  "abracarpar": [
+    "anime couple emotional hug scene",
+    "anime couple warm embrace"
+  ],
+  "elogiarpar": [
+    "anime couple blushing compliment scene",
+    "anime shy romantic reaction"
+  ],
+  "declaracao": [
+    "anime love confession scene",
+    "anime romantic confession under stars"
+  ],
+  "presentepar": [
+    "anime couple giving present surprise",
+    "anime romantic gift reaction"
+  ],
+  "encontro": [
+    "anime couple date scene",
+    "anime romantic date night"
+  ],
+  "promessapar": [
+    "anime couple pinky promise scene",
+    "anime romantic promise scene"
+  ],
+  "renovarvotos": [
+    "anime wedding vow renewal couple",
+    "anime couple romantic promise"
+  ],
+  "mimo": [
+    "anime couple cute affection scene",
+    "anime couple caring for each other"
+  ],
+  "ciumes": [
+    "anime jealous girlfriend funny reaction",
+    "anime jealous boyfriend reaction"
+  ],
+  "sorteiodata": [
+    "anime couple lucky date reaction",
+    "anime romantic date idea scene"
+  ]
 });
 
 function validCoupleMp4(buffer) {
@@ -50,7 +107,7 @@ async function getCoupleGif(command) {
   const queries = (Array.isArray(rawQueries) ? rawQueries : [rawQueries]).filter(Boolean);
   if (!queries.length) return null;
 
-  const cachePath = path.resolve('./gifs/cache', `casal-anime-v5-${command}.mp4`);
+  const cachePath = path.resolve('./gifs/cache', `casal-anime-v7-${command}.mp4`);
   try {
     const cache = fs.readFileSync(cachePath);
     if (validCoupleMp4(cache)) return cache;
@@ -58,11 +115,12 @@ async function getCoupleGif(command) {
   } catch {}
 
   let lastError = null;
-  for (const query of queries) {
+  for (const query of expandGifQueries(queries)) {
     try {
       const results = await searchGiphyGif(query);
       const result = findThematicGif(results, query);
       if (!result) continue;
+      console.log(`[GIF CASAL ${command}] Anime selecionado: ${result.title || result.slug || result.id}`);
       const buffer = await downloadGiphyGif(result);
       if (!validCoupleMp4(buffer)) throw new Error('GIF de casal retornou um MP4 inválido.');
       fs.mkdirSync(path.dirname(cachePath), { recursive: true });
