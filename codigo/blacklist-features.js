@@ -364,6 +364,159 @@ export async function handleBlacklistCommand(ctx) {
   }
 }
 
+
+// LEO_PROTECAO_DOS_PROPRIETARIOS_V1
+export async function handleProtectedTargetAction(sock, update, isOwnerFn) {
+  const groupJid = update?.id;
+
+  if (!groupJid?.endsWith('@g.us')) return;
+  if (!['demote', 'remove'].includes(update?.action)) return;
+
+  // Sem autor real, não existe punição segura.
+  const author = update?.author;
+  if (!author) {
+    console.warn('[PROTEÇÃO] Ação contra participante protegido sem autor identificável.');
+    return;
+  }
+
+  const targets = Array.isArray(update.participants)
+    ? update.participants
+    : [];
+
+  if (!targets.length) return;
+
+  let metadata;
+  try {
+    metadata = await sock.groupMetadata(groupJid);
+  } catch (error) {
+    console.error('[PROTEÇÃO] Não foi possível consultar o grupo:', error?.message || error);
+    return;
+  }
+
+  const participants = metadata?.participants || [];
+  const currentBotAliases = botAliases(sock);
+  const bot = participantFor(currentBotAliases, participants);
+
+  console.log('[PROTEÇÃO][DIAGNÓSTICO]', JSON.stringify({
+    socketUser: sock?.user,
+    authMe: sock?.authState?.creds?.me,
+    botAliases: [...currentBotAliases],
+    matchedBot: bot,
+    groupAdmins: participants.filter(isAdmin).map(p => ({
+      id: p.id,
+      jid: p.jid,
+      lid: p.lid,
+      phoneNumber: p.phoneNumber,
+      admin: p.admin,
+      isAdmin: p.isAdmin
+    }))
+  }));
+
+  if (!botIsGroupAdmin(sock, metadata, participants)) {
+    console.warn('[PROTEÇÃO] Bot sem administração. Nenhuma punição aplicada.');
+    return;
+  }
+
+  const protectedBot = botAliases(sock);
+  const protectedGroupOwner = identityAliases(metadata?.owner);
+
+  const isProtected = target => {
+    const aliases = identityAliases(target);
+
+    if (!aliases.size) return false;
+    if (aliasesMatch(aliases, protectedBot)) return true;
+    if (aliasesMatch(aliases, protectedGroupOwner)) return true;
+
+    if (typeof isOwnerFn === 'function') {
+      for (const alias of aliases) {
+        try {
+          if (isOwnerFn(alias)) return true;
+        } catch {}
+      }
+    }
+
+    return false;
+  };
+
+  if (!targets.some(isProtected)) return;
+
+  const authorAliases = identityAliases(author);
+  const actor = participantFor(authorAliases, participants);
+
+  if (!actor) {
+    console.warn('[PROTEÇÃO] Autor não encontrado entre os participantes. Punição cancelada.');
+    return;
+  }
+
+  const actorJid = String(
+    actor.id || actor.jid || actor.phoneNumber || ''
+  );
+
+  if (!actorJid) {
+    console.warn('[PROTEÇÃO] Identificador do autor indisponível.');
+    return;
+  }
+
+  // Não punir o próprio alvo protegido.
+  if (isProtected(actor)) {
+    console.warn('[PROTEÇÃO] O autor também é um alvo protegido. Punição cancelada.');
+    return;
+  }
+
+  if (!isAdmin(actor)) {
+    console.warn('[PROTEÇÃO] Autor não é administrador. Punição administrativa ignorada.');
+    return;
+  }
+
+  const data = loadData();
+  data.protectionAttempts ||= {};
+  data.protectionAttempts[groupJid] ||= {};
+
+  const actorKey = [...authorAliases].sort()[0] || actorJid;
+  const attempts = data.protectionAttempts[groupJid];
+  const previous = Number(attempts[actorKey] || 0);
+  const current = previous + 1;
+
+  // Registrar antes da ação para preservar o histórico mesmo se a API falhar.
+  attempts[actorKey] = current;
+  saveData(data);
+
+  const action = current === 1 ? 'demote' : 'remove';
+  const description = current === 1
+    ? 'primeira tentativa: rebaixamento'
+    : 'segunda tentativa ou posterior: remoção';
+
+  console.warn(
+    `[PROTEÇÃO] ${description} | grupo=${groupJid} | autor=${actorJid}`
+  );
+
+  try {
+    const result = await sock.groupParticipantsUpdate(
+      groupJid,
+      [actorJid],
+      action
+    );
+
+    const response = Array.isArray(result) ? result[0] : null;
+    const status = String(response?.status || '');
+
+    if (status === '200') {
+      console.log(
+        `[PROTEÇÃO] Punição confirmada: ${action} | autor=${actorJid} | tentativa=${current}`
+      );
+    } else {
+      console.warn(
+        `[PROTEÇÃO] Ação não confirmada: ${action} | status=${status || 'desconhecido'}`
+      );
+    }
+  } catch (error) {
+    console.error(
+      `[PROTEÇÃO] Falha ao aplicar ${action}:`,
+      String(error?.message || error).slice(0, 250)
+    );
+  }
+}
+
 export async function handleBlacklistedParticipantUpdate(sock, update) {
   const groupJid = update?.id;
   if (!groupJid?.endsWith('@g.us') || update?.action !== 'add') return;

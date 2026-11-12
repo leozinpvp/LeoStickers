@@ -72,3 +72,5 @@ backup-*/
 *credentials*.json
 *secrets*.json
 *token*.json
+group-bot-control.json
+protection-attempts.json

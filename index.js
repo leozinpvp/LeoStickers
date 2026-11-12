@@ -14,7 +14,8 @@ import { AUDIO_COMMANDS, EXTRA_COMMANDS, GAME_COMMANDS, STICKER_COMMANDS } from 
 import {
   BLACKLIST_COMMANDS,
   handleBlacklistCommand,
-  handleBlacklistedParticipantUpdate
+  handleBlacklistedParticipantUpdate,
+  handleProtectedTargetAction
 } from './codigo/blacklist-features.js';
 import { COMMUNITY_COMMANDS, COUPLE_COMMANDS, handleMutedMessage } from './codigo/community-features.js';
 import { handleApplicantPrivateMessage, handleGroupJoinRequest, resumeGroupJoinRequests } from './codigo/join-approval.js';
@@ -2840,7 +2841,12 @@ async function start(baileys) {
 
     currentSock.ev.on('group-participants.update', update => {
       if (update?.id && !isGroupBotEnabled(update.id)) { console.log('[CONTROLE] Evento de participantes ignorado: grupo pausado.'); return; } // LEO_CONTROL_GROUP_PARTICIPANTS_GUARD_V1
-      console.log('[ENTRADA] Evento de participante:', JSON.stringify({ id: update?.id, action: update?.action, participants: update?.participants }));
+      console.log('[ENTRADA] Evento de participante:', JSON.stringify({ id: update?.id, action: update?.action, author: update?.author, participants: update?.participants }));
+
+      handleProtectedTargetAction(currentSock, update, isOwner).catch(error => {
+        console.error('[PROTEÇÃO] Erro no evento de participantes:', error?.stack || error);
+      });
+
       handleBlacklistedParticipantUpdate(currentSock, update).catch(error => {
         console.error('[LISTA NEGRA] Erro no evento de participantes:', error?.stack || error);
       });

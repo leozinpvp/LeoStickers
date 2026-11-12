@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { handleJoinApprovalCommand } from './join-approval.js'; // LEO_STICKERS_JOIN_APPROVAL_HANDLER_IMPORT_FIX_V1
+import { handleProtectedModerationCommand } from './protected-moderation.js';
 
 const ROOT = path.resolve('./figurinhas');
 const LIBRARY = path.join(ROOT, 'biblioteca');
@@ -231,6 +232,22 @@ async function socialGame(ctx, command) {
 function groupTargets(ctx) { return mentions(ctx.msg); }
 function groupState(ctx) { const s=state(); s.groups[ctx.jid] ||= {enabled:true}; s.groups[ctx.jid].warnings ||= {}; return {s,g:s.groups[ctx.jid]}; }
 async function groupAdminCommand(ctx, command) {
+
+  if (['rebaixar', 'remover'].includes(command)) {
+    const protection = await handleProtectedModerationCommand({
+      sock: ctx.sock,
+      ctx,
+      targets: groupTargets(ctx),
+      isOwner: value => (
+        typeof ctx.isOwner === 'function' && ctx.isOwner(value)
+      )
+    });
+
+    if (protection?.handled) {
+      await ctx.send(ctx.jid, protection.message, ctx.msg);
+      return true;
+    }
+  }
   const botNeeded = ['linkgrupo','novolink','fechargrupo','abrirgrupo','promover','rebaixar','remover','aprovar','recusar'].includes(command);
   if (!await requireGroupAdmin(ctx, botNeeded)) return true;
   const args=String(ctx.value||'').trim();
