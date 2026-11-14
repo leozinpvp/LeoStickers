@@ -10,6 +10,11 @@ const PRESENTATION_SCHEMA_VERSION = 3;
 // Regra migrada por ID, nunca pelo nome visível do grupo.
 const LEGACY_MOCIDADE_GROUP_ID = '120363377675873837@g.us';
 const TRANSIENT_PHOTOS = new Map(); // Buffers ficam apenas na memória, nunca no JSON.
+const JOIN_EVENTS_IN_FLIGHT = new Set(); // Evita processar o mesmo evento em paralelo.
+const PRIVATE_APPLICANT_MESSAGE_IDS = new Map(); // IDs recentes de mensagens privadas já tratadas.
+const PRIVATE_APPLICANT_MESSAGE_TTL_MS = 10 * 60 * 1000; // 10 minutos.
+const PRIVATE_APPLICANT_MESSAGE_MAX = 1000; // Limite de memória da deduplicação.
+const ADMIN_NOTICE_COOLDOWN_MS = 6 * 60 * 60 * 1000; // Um aviso igual por solicitação a cada 6h.
 const COMMANDS = new Set([
   'entrada', 'autoaceitar', 'autoaprovarsolicitacao', 'criarclausulas', 'clausulas',
   'solicitacoes', 'aprovarsolicitacao', 'recusarsolicitacao'
@@ -73,18 +78,50 @@ function normalizeJid(value) {
   return `${raw.slice(0, at).split(':')[0]}${raw.slice(at)}`;
 }
 
+function isDuplicateApplicantPrivateMessage(msg, remoteJid) {
+  const messageId = String(msg?.key?.id || '').trim();
+  if (!messageId) return false; // Sem ID confiável, mantém o processamento normal.
+
+  const sender = normalizeJid(remoteJid);
+  const cacheKey = `${sender}:${messageId}`;
+  const now = Date.now();
+
+  // Remove entradas expiradas para manter a memória limitada.
+  for (const [key, expiresAt] of PRIVATE_APPLICANT_MESSAGE_IDS) {
+    if (expiresAt <= now) PRIVATE_APPLICANT_MESSAGE_IDS.delete(key);
+  }
+
+  if (PRIVATE_APPLICANT_MESSAGE_IDS.has(cacheKey)) {
+    console.log(`[ENTRADA] Mensagem privada repetida ignorada: id=${messageId.slice(0, 60)}`);
+    return true;
+  }
+
+  while (PRIVATE_APPLICANT_MESSAGE_IDS.size >= PRIVATE_APPLICANT_MESSAGE_MAX) {
+    const oldestKey = PRIVATE_APPLICANT_MESSAGE_IDS.keys().next().value;
+    if (oldestKey === undefined) break;
+    PRIVATE_APPLICANT_MESSAGE_IDS.delete(oldestKey);
+  }
+
+  PRIVATE_APPLICANT_MESSAGE_IDS.set(cacheKey, now + PRIVATE_APPLICANT_MESSAGE_TTL_MS);
+  return false;
+}
+
 function identityAliases(value) {
   const out = new Set();
   const add = item => {
     if (!item) return;
     if (typeof item === 'object') {
-      for (const key of ['id', 'jid', 'lid', 'phoneNumber', 'participant', 'participantAlt']) add(item[key]);
+      for (const key of ['id', 'jid', 'lid', 'phoneNumber', 'pn', 'participant', 'participantAlt', 'participantPn', 'participantLid', 'groupParticipant']) add(item[key]);
       return;
     }
     const jid = normalizeJid(item);
     if (jid) out.add(jid);
   };
-  add(value);
+  if (Array.isArray(value) || value instanceof Set) {
+    for (const item of value) add(item);
+  } else {
+    add(value);
+  }
   return out;
 }
 
@@ -124,6 +161,7 @@ function makeGroupConfig(groupJid, subject = '') {
     groupName: String(subject || '').slice(0, 100),
     enabled: false,
     autoAccept: false,
+    inviteMode: 'text', // Padrão legado: convite somente em texto.
     clauses: [],
     fields: {
       photo: true,
@@ -180,6 +218,7 @@ function getGroupConfig(data, groupJid, subject = '') {
   cfg.requireClauseAcceptance = cfg.requireClauseAcceptance !== false;
   cfg.enabled = Boolean(cfg.enabled);
   cfg.autoAccept = Boolean(cfg.autoAccept);
+  if (!['text', 'buttons'].includes(cfg.inviteMode)) cfg.inviteMode = 'text';
   cfg.noDeadline = true;
   return cfg;
 }
@@ -242,6 +281,7 @@ function helpText() {
     '!clausulas campos — mostra o que este grupo pede',
     '!clausulas campo foto|nome|idade|comum|cargo|instagram|batizado|estado civil|pv liberado on/off — configura cada campo',
     '!clausulas campo todos on/off — liga/desliga todos os campos de uma vez',
+    '!clausulas convite texto|botoes — escolhe convite antigo em texto ou com botões (por grupo)',
     '!solicitacoes — lista pedidos e códigos de análise',
     '!aprovarsolicitacao código — aprova solicitação pronta',
     '!recusarsolicitacao código — recusa solicitação',
@@ -271,6 +311,9 @@ function clauseText(cfg) {
     fields,
     'Para ver: !clausulas campos | Para alterar: !clausulas campo NOME on/off',
     'Autorização para publicar a apresentação completa no grupo: obrigatória no PV',
+    '',
+    `Formato do convite: ${cfg.inviteMode === 'buttons' ? 'botões' : 'somente texto'}`,
+    'Para alterar: !clausulas convite texto ou !clausulas convite botoes',
     '',
     `Apresentação no PV: ${cfg.enabled ? 'ativada' : 'desativada'}`,
     'Publicação no grupo: após consentimento explícito no PV',
@@ -480,11 +523,49 @@ function evaluateApplication(app, cfg) {
 }
 
 function findOpenApplication(data, groupJid, applicant) {
-  const wanted = normalizeJid(applicant);
+  const wanted = identityAliases(applicant);
   return Object.values(data.applications).find(app =>
-    app.groupJid === groupJid && normalizeJid(app.participant) === wanted &&
+    app.groupJid === groupJid && aliasesMatch(identityAliases(app), wanted) &&
     !['approved', 'rejected', 'revoked', 'age_rejection_pending', 'joined_age_rejected'].includes(app.status)
   );
+}
+
+function participantIdentity(event) {
+  const raw = event?.participant ?? event?.participants?.[0] ?? null;
+  const object = raw && typeof raw === 'object' ? raw : {};
+  const groupParticipant = typeof raw === 'string' ? raw :
+    (object.id || object.jid || object.lid || object.participant || object.phoneNumber || '');
+  const normalizeCandidate = value => {
+    if (!value) return '';
+    const jid = normalizeJid(value);
+    return jid.endsWith('@s.whatsapp.net') ? jid : '';
+  };
+  const normalizeLid = value => {
+    if (!value) return '';
+    const jid = normalizeJid(value);
+    return jid.endsWith('@lid') ? jid : '';
+  };
+  const participantPn = normalizeCandidate(
+    event?.participantPn || event?.participantPN || object.participantPn || object.phoneNumber || object.pn ||
+    (typeof groupParticipant === 'string' && groupParticipant.endsWith('@s.whatsapp.net') ? groupParticipant : '')
+  );
+  const participantLid = normalizeLid(
+    event?.participantLid || object.lid ||
+    (typeof groupParticipant === 'string' && groupParticipant.endsWith('@lid') ? groupParticipant : '')
+  );
+  return { groupParticipant, participantPn, participantLid, raw };
+}
+
+async function resolvePrivateJid(sock, identity) {
+  const direct = normalizeJid(identity?.participantPn || '');
+  if (direct.endsWith('@s.whatsapp.net')) return direct;
+
+  const groupId = normalizeJid(identity?.groupParticipant || '');
+  if (groupId.endsWith('@s.whatsapp.net')) return groupId;
+
+  const lid = normalizeJid(identity?.participantLid || groupId || '');
+  if (lid.endsWith('@lid')) return lid;
+  return '';
 }
 
 function createCode(data) {
@@ -510,30 +591,40 @@ function buildPresentationCopyTemplate(cfg) {
 }
 
 async function sendApplicationInvite(sock, applicant, cfg, app) {
-  const text = renderRequestMessage(cfg, app);
+  const useButtons = cfg.inviteMode === 'buttons';
+  const text = renderRequestMessage(cfg, app, useButtons);
+  if (!useButtons) {
+    return await sock.sendMessage(applicant, { text });
+  }
   try {
-    await sendInteractiveMessage(sock, applicant, {
+    return await sendInteractiveMessage(sock, applicant, {
       text,
       footer: 'Léo Stickers • Apresentação',
       buttons: [
-        { name: 'quick_reply', buttonParamsJson: JSON.stringify({ display_text: '📝 Iniciar apresentação', id: `ls_start_presentation_${app.code}` }) },
+        { name: 'quick_reply', buttonParamsJson: JSON.stringify({ display_text: '📝 Iniciar apresentação', id: 'ls_start_presentation_' + app.code }) },
         { name: 'cta_copy', buttonParamsJson: JSON.stringify({ display_text: '📋 Copiar modelo', copy_code: buildPresentationCopyTemplate(cfg) }) }
       ]
     });
   } catch (error) {
     console.warn('[APRESENTAÇÃO] Botões indisponíveis; enviando convite em texto:', error?.message || error);
-    await sock.sendMessage(applicant, { text: `${text}\n\nCaso os botões não apareçam, envie *!apresentação ${app.code}* para começar. O modelo também pode ser copiado manualmente a partir dos campos acima.` });
+    return await sock.sendMessage(applicant, { text: text + '\n\nComo alternativa, envie *!apresentação ' + app.code + '* para começar. O modelo também pode ser copiado manualmente a partir dos campos acima.' });
   }
 }
 
-function renderRequestMessage(cfg, app) {
+function renderRequestMessage(cfg, app, useButtons = cfg.inviteMode === 'buttons') {
   return [
     `🦊 Olá! Recebemos sua solicitação para entrar no grupo *${cfg.groupName || 'grupo'}*.`,
     '',
     `Código da apresentação: *${app.code}*`,
-    `Toque em *Iniciar apresentação* para começar sem digitar nenhum comando.`,
-    'Use *Copiar modelo* para copiar a lista de campos e preencher tudo com mais facilidade.',
-    'Se os botões não aparecerem, responda *!apresentação ' + app.code + '* neste PV.',
+    ...(useButtons
+      ? [
+          'Toque em *Iniciar apresentação* para começar sem digitar nenhum comando.',
+          'Use *Copiar modelo* para copiar a lista de campos e preencher tudo com mais facilidade.',
+          'Se os botões não aparecerem, responda *!apresentação ' + app.code + '* neste PV.'
+        ]
+      : [
+          'Para começar, responda *apresentação* neste PV. Se houver mais de uma solicitação pendente, use *!apresentação ' + app.code + '*.'
+        ]),
     '',
     'Envie tudo somente neste PV. Depois da validação, a solicitação será aprovada conforme a configuração do grupo. A foto e a apresentação só serão publicadas quando o WhatsApp confirmar que você realmente entrou no grupo.',
     'O bot pedirá uma confirmação SIM/NÃO da idade e uma autorização SIM/NÃO para publicar seus dados. A foto ficará apenas temporariamente na memória e não será gravada no banco de dados.',
@@ -559,7 +650,50 @@ function renderRequestMessage(cfg, app) {
   ].join('\n');
 }
 
+function selectPrivateRecipient(...candidates) {
+  const normalized = candidates
+    .map(candidate => normalizeJid(candidate || ''))
+    .filter(jid => /^\d+@s\.whatsapp\.net$/.test(jid) || /^\d+@lid$/.test(jid));
+
+  // Use PN when WhatsApp provides it, but do not discard the LID when PN is
+  // absent. Baileys 6.7.18 routes direct @lid JIDs through relayMessage.
+  const phoneJid = normalized.find(jid => jid.endsWith('@s.whatsapp.net'));
+  if (phoneJid) return phoneJid;
+
+  return normalized.find(jid => jid.endsWith('@lid')) || '';
+}
+
+function shouldSendAdminNotice(app, summary, now = Date.now()) {
+  const noticeKey = `${app?.status || 'unknown'}|${normalizeLabel(summary || 'solicitacao pendente').slice(0, 180)}`;
+  const previousAt = Date.parse(app?.lastAdminNoticeAt || '');
+  if (app?.lastAdminNoticeKey === noticeKey && Number.isFinite(previousAt) &&
+      now - previousAt < ADMIN_NOTICE_COOLDOWN_MS) {
+    return false;
+  }
+  if (app && typeof app === 'object') {
+    app.lastAdminNoticeKey = noticeKey;
+    app.lastAdminNoticeAt = new Date(now).toISOString();
+  }
+  return true;
+}
+
 async function notifyAdmins(sock, groupJid, app, summary) {
+  // A sincronização roda novamente quando o WhatsApp reconecta. Sem deduplicação,
+  // uma falha de PV gera a mesma mensagem no grupo a cada nova sincronização.
+  if (!shouldSendAdminNotice(app, summary)) return false;
+  // Persiste a trava para que ela continue valendo depois de reiniciar o bot.
+  try {
+    const latest = loadData();
+    const stored = latest.applications?.[app.code];
+    if (stored) {
+      stored.lastAdminNoticeKey = app.lastAdminNoticeKey;
+      stored.lastAdminNoticeAt = app.lastAdminNoticeAt;
+      saveData(latest);
+    }
+  } catch (error) {
+    console.warn('[ENTRADA] Não consegui salvar o controle de avisos:', error?.message || error);
+  }
+
   try {
     const meta = await sock.groupMetadata(groupJid);
     const mentions = (meta.participants || [])
@@ -571,8 +705,10 @@ async function notifyAdmins(sock, groupJid, app, summary) {
       text: `📨 Uma solicitação de entrada ${label}.\nCódigo: *${app.code}*\nUse !solicitacoes para consultar e !aprovarsolicitacao ${app.code} ou !recusarsolicitacao ${app.code}.${detail}`,
       mentions
     });
+    return true;
   } catch (error) {
     console.error('[ENTRADA] Não foi possível avisar os administradores do grupo:', error?.message || error);
+    return false;
   }
 }
 
@@ -680,7 +816,7 @@ async function dispatchApplication(sock, data, app, cfg, result) {
     delete data.activeByApplicant[normalizeJid(app.participant)];
     saveData(data);
     try {
-      const response = await sock.groupRequestParticipantsUpdate(app.groupJid, [app.participant], 'reject');
+      const response = await sock.groupRequestParticipantsUpdate(app.groupJid, [app.groupParticipant || app.participantLid || app.participant], 'reject');
       const succeeded = Array.isArray(response) && response.some(item => String(item.status || '200') === '200');
       if (!succeeded) throw new Error('WhatsApp não confirmou a recusa da solicitação.');
       app.status = 'rejected';
@@ -739,7 +875,7 @@ async function dispatchApplication(sock, data, app, cfg, result) {
       app.status = 'approval_pending';
       app.approvalRequestedAt = new Date().toISOString();
       saveData(data);
-      const response = await sock.groupRequestParticipantsUpdate(app.groupJid, [app.participant], 'approve');
+      const response = await sock.groupRequestParticipantsUpdate(app.groupJid, [app.groupParticipant || app.participantLid || app.participant], 'approve');
       const succeeded = Array.isArray(response) && response.some(item => String(item.status || '200') === '200');
       if (!succeeded) throw new Error('WhatsApp não confirmou a aprovação da solicitação.');
       // O retorno de approve não prova que o participante já entrou. Aguardamos
@@ -773,33 +909,71 @@ async function dispatchApplication(sock, data, app, cfg, result) {
 
 export async function handleGroupJoinRequest(sock, event) {
   if (!event || !event.id) return false;
-  // Aceita tanto o objeto normalizado pelo index.js quanto o evento bruto
-  // do Baileys, que traz participants: [jid, ...].
+  // Eventos em lote são divididos primeiro; assim cada participante recebe sua própria trava.
   if (!event.participant && Array.isArray(event.participants)) {
-    let handled = false;
-    for (const participant of event.participants) {
-      const result = await handleGroupJoinRequest(sock, { ...event, participants: undefined, participant });
-      handled = result || handled;
-    }
-    return handled;
+    return processGroupJoinRequest(sock, event);
   }
-  const participantValue = event.participant || (Array.isArray(event.participants) ? event.participants[0] : null);
-  if (!participantValue) return false;
-  const data = loadData();
+  const identity = participantIdentity(event);
+  const who = identity.participantLid || identity.groupParticipant || identity.participantPn;
+  if (!who) return processGroupJoinRequest(sock, event);
+  const lockKey = `${event.id}|${normalizeJid(who)}|${event.action || ''}`;
+  if (JOIN_EVENTS_IN_FLIGHT.has(lockKey)) return false;
+  JOIN_EVENTS_IN_FLIGHT.add(lockKey);
+  try {
+    return await processGroupJoinRequest(sock, event);
+  } finally {
+    JOIN_EVENTS_IN_FLIGHT.delete(lockKey);
+  }
+}
+
+async function processGroupJoinRequest(sock, event) {
+  if (!event || !event.id) return false;
   const groupJid = String(event.id);
   if (!isGroupBotEnabled(groupJid)) {
     console.log(`[CONTROLE] Solicitação/entrada ignorada porque o bot está pausado em ${groupJid}.`);
     return false;
   }
-  const applicant = normalizeJid(participantValue);
-  if (!applicant) return false;
 
-  // Baileys confirma a entrada real pelo evento group-participants.update action=add.
+  if (!event.participant && Array.isArray(event.participants)) {
+    let handled = false;
+    for (const participant of event.participants) {
+      const participantObject = participant && typeof participant === 'object' ? participant : {};
+      const normalizedEvent = {
+        ...event,
+        participants: undefined,
+        participant,
+        participantPn: event.participantPn || participantObject.phoneNumber || participantObject.pn || participantObject.participantPn,
+        participantLid: event.participantLid || participantObject.lid
+      };
+      const result = await handleGroupJoinRequest(sock, normalizedEvent);
+      handled = result || handled;
+    }
+    return handled;
+  }
+
+  const identity = participantIdentity(event);
+  const privateJid = await resolvePrivateJid(sock, identity);
+  const groupParticipant = normalizeJid(identity.groupParticipant || identity.participantLid || privateJid);
+  console.log(`[ENTRADA] Solicitação ${event.action || 'sem ação'} em ${groupJid}: PN no evento=${Boolean(identity.participantPn?.endsWith('@s.whatsapp.net'))}; LID=${Boolean(identity.participantLid || groupParticipant.endsWith('@lid'))}; PN resolvido=${Boolean(privateJid)}; método=${event.method || 'desconhecido'}.`);
+  const aliases = identityAliases({
+    participant: privateJid || identity.participantPn || '',
+    participantPn: identity.participantPn,
+    participantLid: identity.participantLid,
+    groupParticipant,
+    raw: identity.raw
+  });
+  if (!aliases.size) return false;
+
+  const data = loadData();
+
+  // Baileys pode enviar LID no campo participant e o número real separado em
+  // participantPn. O número é destino de PV; o LID continua sendo a identidade
+  // usada para operações de entrada no grupo.
   if (event.action === 'add' || event.action === 'joined') {
-    const joinedApp = findOpenApplication(data, groupJid, applicant);
+    const joinedApp = findOpenApplication(data, groupJid, [...aliases]);
     if (!joinedApp) {
       const ageBlocked = Object.values(data.applications).find(item =>
-        item.groupJid === groupJid && normalizeJid(item.participant) === applicant &&
+        item.groupJid === groupJid && aliasesMatch(identityAliases(item), aliases) &&
         item.rejectionType === 'age_maximum' && ['rejected', 'age_rejection_pending', 'joined_age_rejected'].includes(item.status)
       );
       if (ageBlocked) {
@@ -808,6 +982,8 @@ export async function handleGroupJoinRequest(sock, event) {
       }
       return false;
     }
+    if (privateJid?.endsWith('@s.whatsapp.net')) joinedApp.participant = privateJid;
+    if (groupParticipant) joinedApp.groupParticipant = groupParticipant;
     joinedApp.joinedAt ||= new Date().toISOString();
     const storedCfg = data.groups[groupJid];
     if (!storedCfg?.enabled) {
@@ -824,9 +1000,11 @@ export async function handleGroupJoinRequest(sock, event) {
         joinedApp.rejectionReason = result.reasons.join('; ');
         joinedApp.rejectedAt = new Date().toISOString();
         saveData(data);
-        await sock.sendMessage(applicant, {
-          text: `⛔ Sua entrada foi detectada, mas a idade informada (${joinedApp.fields.age} anos) ultrapassa o limite de *${cfg.maxAge} anos*. Sua apresentação não será publicada. Fale com os administradores.`
-        }).catch(() => {});
+        if (joinedApp.participant?.endsWith('@s.whatsapp.net')) {
+          await sock.sendMessage(joinedApp.participant, {
+            text: `⛔ Sua entrada foi detectada, mas a idade informada (${joinedApp.fields.age} anos) ultrapassa o limite de *${cfg.maxAge} anos*. Sua apresentação não será publicada. Fale com os administradores.`
+          }).catch(error => console.warn('[ENTRADA] Falha ao avisar participante no PV:', error?.message || error));
+        }
         await notifyAdmins(sock, groupJid, joinedApp, `ALERTA: a pessoa já entrou, mas declarou idade acima do limite (${cfg.maxAge}). A apresentação foi bloqueada e não foi publicada.`);
         return true;
       }
@@ -837,37 +1015,41 @@ export async function handleGroupJoinRequest(sock, event) {
       const explanation = result.status === 'review'
         ? `Sua entrada foi detectada, mas sua apresentação precisa de análise dos administradores:\n${result.reasons.join('\n')}`
         : `Sua entrada foi detectada. Para concluir a apresentação ainda falta:\n${(result.missing || []).join('\n')}`;
-      await sock.sendMessage(applicant, { text: explanation }).catch(() => {});
-      await notifyAdmins(sock, groupJid, joinedApp, 'A pessoa já entrou, mas a apresentação não está liberada para publicação: ' + (result.reasons || result.missing || []).join('; '));
+      if (joinedApp.participant?.endsWith('@s.whatsapp.net')) {
+        await sock.sendMessage(joinedApp.participant, { text: explanation }).catch(error => console.warn('[ENTRADA] Falha ao avisar participante no PV:', error?.message || error));
+      }
+      await notifyAdmins(sock, groupJid, joinedApp, 'A pessoa já entrou, mas sua apresentação não está liberada para publicação: ' + (result.reasons || result.missing || []).join('; '));
       return true;
     }
     const published = await publishApplicationToGroup(sock, data, joinedApp, cfg);
     if (!published) {
       joinedApp.status = 'publication_pending';
       saveData(data);
-      if (joinedApp.photoResendRequired) {
-        await sock.sendMessage(applicant, {
+      if (joinedApp.photoResendRequired && joinedApp.participant?.endsWith('@s.whatsapp.net')) {
+        await sock.sendMessage(joinedApp.participant, {
           text: '✅ Sua entrada foi confirmada. Só falta reenviar a foto neste PV para eu concluir a publicação; seus outros dados continuam salvos.'
-        }).catch(() => {});
+        }).catch(error => console.warn('[ENTRADA] Falha ao pedir reenvio da foto no PV:', error?.message || error));
       }
       return true;
     }
     joinedApp.status = 'approved';
     joinedApp.approvedAt ||= new Date().toISOString();
     saveData(data);
-    await sock.sendMessage(applicant, {
-      text: `✅ Sua entrada em *${cfg.groupName || 'o grupo'}* foi confirmada e sua apresentação completa já foi publicada. Deus abençoe!`
-    }).catch(() => {});
+    if (joinedApp.participant?.endsWith('@s.whatsapp.net')) {
+      await sock.sendMessage(joinedApp.participant, {
+        text: `✅ Sua entrada em *${cfg.groupName || 'o grupo'}* foi confirmada e sua apresentação completa já foi publicada. Deus abençoe!`
+      }).catch(error => console.warn('[ENTRADA] Falha ao avisar publicação no PV:', error?.message || error));
+    }
     await notifyAdmins(sock, groupJid, joinedApp, 'Entrada confirmada e apresentação publicada.');
     return true;
   }
 
   if (event.action === 'revoked' || event.action === 'rejected') {
-    const existing = findOpenApplication(data, groupJid, applicant);
+    const existing = findOpenApplication(data, groupJid, [...aliases]);
     if (existing) {
       existing.status = event.action === 'revoked' ? 'revoked' : 'rejected';
       existing.closedAt = new Date().toISOString();
-      delete data.activeByApplicant[applicant];
+      delete data.activeByApplicant[normalizeJid(existing.participant)];
       saveData(data);
     }
     return false;
@@ -878,18 +1060,44 @@ export async function handleGroupJoinRequest(sock, event) {
   const cfg = getGroupConfig(data, groupJid, storedCfg.groupName || '');
   saveData(data);
 
-  let app = findOpenApplication(data, groupJid, applicant);
+  let app = findOpenApplication(data, groupJid, [...aliases]);
+  const targetPrivateJid = selectPrivateRecipient(
+    privateJid,
+    app?.participant,
+    identity.participantPn,
+    groupParticipant,
+    identity.participantLid
+  );
   if (app) {
-    if (app.dmSent) return false;
-    try {
-      await sendApplicationInvite(sock, applicant, cfg, app);
-      app.dmSent = true;
-      app.dmSentAt = new Date().toISOString();
+    if (targetPrivateJid) app.participant = targetPrivateJid;
+    if (groupParticipant) app.groupParticipant = groupParticipant;
+    if (targetPrivateJid.endsWith('@s.whatsapp.net')) app.participantPn ||= targetPrivateJid;
+    app.participantLid ||= identity.participantLid;
+    if (app.dmSent) { saveData(data); return false; }
+    if (!targetPrivateJid) {
+      app.dmError = 'O WhatsApp informou apenas um LID, sem número privado resolvido.';
       saveData(data);
+      await notifyAdmins(sock, groupJid, app, 'Não consegui localizar o número de telefone para abrir o PV. Peça à pessoa para enviar uma mensagem diretamente ao bot.');
+      return false;
+    }
+    try {
+      const inviteMessage = await sendApplicationInvite(sock, targetPrivateJid, cfg, app);
+      app.dmSent = true;
+      app.dmMessageId = inviteMessage?.key?.id || '';
+      app.dmRecipientJid = targetPrivateJid;
+      app.dmSendRequestedAt = new Date().toISOString();
+      app.dmDeliveryState = app.dmMessageId ? 'pending' : 'submitted_without_message_id';
+      console.log('[ENTRADA] Envio aceito pelo Baileys para ' + targetPrivateJid + '; ID=' + (app.dmMessageId || 'não retornado') + '. Aguardando confirmação de entrega.');
+      app.dmSentAt = new Date().toISOString();
+      app.dmError = '';
+      saveData(data);
+      console.log(`[ENTRADA] Convite enviado ao PV para a solicitação ${app.code} (${targetPrivateJid.endsWith('@lid') ? 'destino LID' : `final do número: ${targetPrivateJid.slice(0, -'@s.whatsapp.net'.length).slice(-4)}`}).`);
       return true;
     } catch (error) {
       app.dmError = String(error?.message || error).slice(0, 240);
       saveData(data);
+      await notifyAdmins(sock, groupJid, app, `Não consegui enviar o convite no PV (${app.dmError}). Peça para a pessoa iniciar uma conversa com o bot.`);
+      console.warn('[ENTRADA] Falha ao enviar convite no PV:', app.dmError);
       return false;
     }
   }
@@ -905,7 +1113,10 @@ export async function handleGroupJoinRequest(sock, event) {
     code: createCode(data),
     groupJid,
     groupName,
-    participant: applicant,
+    participant: (targetPrivateJid.endsWith('@s.whatsapp.net') ? targetPrivateJid : '') || identity.participantPn || groupParticipant,
+    participantPn: (targetPrivateJid.endsWith('@s.whatsapp.net') ? targetPrivateJid : '') || identity.participantPn || '',
+    participantLid: identity.participantLid || (groupParticipant.endsWith('@lid') ? groupParticipant : ''),
+    groupParticipant,
     status: 'awaiting',
     fields: {},
     photoReceived: false,
@@ -916,21 +1127,33 @@ export async function handleGroupJoinRequest(sock, event) {
   data.applications[app.code] = app;
   saveData(data);
 
+  if (!targetPrivateJid) {
+    app.dmError = 'O WhatsApp informou apenas um LID, sem número privado resolvido.';
+    saveData(data);
+    await notifyAdmins(sock, groupJid, app, 'A solicitação foi registrada, mas não consegui resolver o número para enviar o PV. Peça à pessoa para iniciar uma conversa com o bot.');
+    return false;
+  }
+
   try {
-    await sendApplicationInvite(sock, applicant, cfg, app);
+    const inviteMessage = await sendApplicationInvite(sock, targetPrivateJid, cfg, app);
     app.dmSent = true;
+    app.dmMessageId = inviteMessage?.key?.id || '';
+    app.dmRecipientJid = targetPrivateJid;
+    app.dmSendRequestedAt = new Date().toISOString();
+    app.dmDeliveryState = app.dmMessageId ? 'pending' : 'submitted_without_message_id';
+    console.log('[ENTRADA] Envio aceito pelo Baileys para ' + targetPrivateJid + '; ID=' + (app.dmMessageId || 'não retornado') + '. Aguardando confirmação de entrega.');
     app.dmSentAt = new Date().toISOString();
     saveData(data);
+    console.log(`[ENTRADA] Convite enviado ao PV para a solicitação ${app.code} (${targetPrivateJid.endsWith('@lid') ? 'destino LID' : `final do número: ${targetPrivateJid.slice(0, -'@s.whatsapp.net'.length).slice(-4)}`}).`);
     return true;
   } catch (error) {
     app.dmError = String(error?.message || error).slice(0, 240);
     saveData(data);
-    await notifyAdmins(sock, groupJid, app, 'Não consegui enviar a mensagem no privado. Peça para a pessoa iniciar conversa com o bot.');
-    console.warn('[ENTRADA] Falha ao abrir PV para solicitante; solicitação preservada.');
+    await notifyAdmins(sock, groupJid, app, `Não consegui enviar a mensagem no privado (${app.dmError}). Peça para a pessoa iniciar conversa com o bot.`);
+    console.warn('[ENTRADA] Falha ao abrir PV para solicitante:', app.dmError);
     return false;
   }
 }
-
 export async function resumeGroupJoinRequests(sock) {
   const data = loadData();
   const enabledGroups = Object.entries(data.groups).filter(([jid, cfg]) => cfg?.enabled && isGroupBotEnabled(jid)).map(([jid]) => jid);
@@ -946,10 +1169,10 @@ export async function resumeGroupJoinRequests(sock) {
         ['ready', 'review', 'approval_pending', 'awaiting_entry', 'joined_incomplete', 'joined_review', 'publication_pending'].includes(app.status)
       );
       for (const app of candidates) {
-        const aliases = identityAliases(app.participant);
+        const aliases = identityAliases(app);
         const isMember = (metadata.participants || []).some(member => aliasesMatch(aliases, identityAliases(member)));
         if (isMember) {
-          await handleGroupJoinRequest(sock, { id: groupJid, participant: app.participant, action: 'add' });
+          await handleGroupJoinRequest(sock, { id: groupJid, participant: app.groupParticipant || app.participantLid || app.participant, participantPn: app.participantPn || app.participant, participantLid: app.participantLid, action: 'add' });
           scanned++;
         }
       }
@@ -959,9 +1182,9 @@ export async function resumeGroupJoinRequests(sock) {
     try {
       const requests = await sock.groupRequestParticipantsList(groupJid);
       for (const request of requests || []) {
-        const participant = request.jid || request.participant || request.requester;
+        const participant = request.jid || request.participant || request.requester || request.participantPn;
         if (!participant) continue;
-        await handleGroupJoinRequest(sock, { id: groupJid, participant, action: 'created', method: 'invite_link' });
+        await handleGroupJoinRequest(sock, { id: groupJid, ...request, participant, participantPn: request.participantPn || request.phoneNumber || request.pn, action: 'created', method: 'invite_link' });
         scanned++;
       }
     } catch (error) {
@@ -983,24 +1206,82 @@ export async function handleApplicantPrivateMessage(sock, msg) {
   if (!sender) return false;
 
   const data = loadData();
+  // Se o evento de solicitação trouxe apenas o LID e a pessoa inicia o PV,
+  // tenta associar o número privado ao LID usando o mapa local do Baileys.
+  if (sender.endsWith('@s.whatsapp.net') && typeof sock?.signalRepository?.lidMapping?.getLIDForPN === 'function') {
+    for (const candidate of Object.values(data.applications)) {
+      if (!candidate.participantLid || !String(candidate.participant || '').endsWith('@lid')) continue;
+      if (['approved', 'rejected', 'revoked', 'age_rejection_pending', 'joined_age_rejected'].includes(candidate.status)) continue;
+      try {
+        const mappedLid = normalizeJid(await sock.signalRepository.lidMapping.getLIDForPN(sender));
+        if (mappedLid && mappedLid === normalizeJid(candidate.participantLid)) {
+          candidate.participant = sender;
+          candidate.participantPn = sender;
+          saveData(data);
+          break;
+        }
+      } catch (error) {
+        console.warn('[ENTRADA] Não consegui relacionar o PV ao LID da solicitação:', error?.message || error);
+      }
+    }
+  }
   const raw = String(text || '').trim();
   const normalizedStart = raw.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
   const startMatch = normalizedStart.match(/^!apresentacao(?:\s+([a-f0-9]{6}))?\s*$/i);
   const plainStart = normalizeLabel(raw) === 'apresentacao';
   if (startMatch || plainStart) {
+    // O mesmo comando de início pode chegar mais de uma vez pelo messages.upsert.
+    if (isDuplicateApplicantPrivateMessage(msg, remoteJid)) return true;
     const requestedCode = startMatch?.[1]?.toUpperCase();
     let app = requestedCode ? data.applications[requestedCode] : null;
 
     if (!requestedCode) {
-      const activeCode = data.activeByApplicant[sender];
+      // Início automático: a primeira mensagem no PV já pode ser a apresentação.
+  if (!data.activeByApplicant[sender]) {
+    const pending = Object.values(data.applications)
+      .filter(item =>
+        aliasesMatch(identityAliases(item), identityAliases(sender)) && (
+          ['awaiting', 'collecting', 'incomplete', 'awaiting_age_confirmation'].includes(item.status) ||
+          (['ready', 'review'].includes(item.status) && item.ageConfirmed !== true)
+        )
+      )
+      .sort((a, b) => String(b.requestedAt || '').localeCompare(String(a.requestedAt || '')));
+
+    if (pending.length > 1) {
+      const choices = pending.slice(0, 8)
+        .map(item => `• *${item.groupName || 'Grupo'}*: !apresentação ${item.code}`)
+        .join('\\n');
+
+      await sock.sendMessage(remoteJid, {
+        text: `Você tem mais de uma solicitação pendente. Escolha o grupo usando o código recebido:\\n\\n${choices}`
+      });
+      return true;
+    }
+
+    if (pending.length === 1) {
+      const app = pending[0];
+      app.participant = sender;
+      app.participantPn = sender;
+      data.activeByApplicant[sender] = app.code;
+      app.status = app.pendingAgeConfirmation != null
+        ? 'awaiting_age_confirmation'
+        : (app.photoReceived || Object.keys(app.fields || {}).length ? 'incomplete' : 'collecting');
+      app.startedAt ||= new Date().toISOString();
+      saveData(data);
+
+      console.log(`[APRESENTAÇÃO] Início automático no PV: código ${app.code}`);
+    }
+  }
+
+  const activeCode = data.activeByApplicant[sender];
       const activeApp = activeCode ? data.applications[activeCode] : null;
-      if (activeApp && normalizeJid(activeApp.participant) === sender &&
+      if (activeApp && aliasesMatch(identityAliases(activeApp), identityAliases(sender)) &&
           !['approved', 'rejected', 'revoked', 'age_rejection_pending', 'joined_age_rejected'].includes(activeApp.status) &&
           (!['ready', 'review'].includes(activeApp.status) || activeApp.ageConfirmed !== true)) {
         app = activeApp;
       } else {
         const pending = Object.values(data.applications)
-          .filter(item => normalizeJid(item.participant) === sender && (
+          .filter(item => aliasesMatch(identityAliases(item), identityAliases(sender)) && (
             ['awaiting', 'collecting', 'incomplete', 'awaiting_age_confirmation'].includes(item.status) ||
             (['ready', 'review'].includes(item.status) && item.ageConfirmed !== true)
           ))
@@ -1014,7 +1295,7 @@ export async function handleApplicantPrivateMessage(sock, msg) {
       }
     }
 
-    if (!app || normalizeJid(app.participant) !== sender ||
+    if (!app || !aliasesMatch(identityAliases(app), identityAliases(sender)) ||
         ['approved', 'rejected', 'revoked', 'age_rejection_pending', 'joined_age_rejected'].includes(app.status) ||
         (['ready', 'review'].includes(app.status) && app.ageConfirmed === true)) {
       await sock.sendMessage(remoteJid, { text: requestedCode
@@ -1022,6 +1303,8 @@ export async function handleApplicantPrivateMessage(sock, msg) {
         : 'Não encontrei uma solicitação pendente para este número. Primeiro peça para entrar no grupo pelo link e aguarde a mensagem do bot.' });
       return true;
     }
+    app.participant = sender;
+    app.participantPn = sender;
     data.activeByApplicant[sender] = app.code;
     app.status = app.pendingAgeConfirmation != null
       ? 'awaiting_age_confirmation'
@@ -1064,9 +1347,52 @@ export async function handleApplicantPrivateMessage(sock, msg) {
   // Do not intercept unrelated bot commands in a private chat.
   if (raw.startsWith('!')) return false;
 
+  const closedStatuses = ['approved', 'rejected', 'revoked', 'age_rejection_pending', 'joined_age_rejected'];
+
   const activeCode = data.activeByApplicant[sender];
-  const app = activeCode ? data.applications[activeCode] : null;
-  if (!app || normalizeJid(app.participant) !== sender || ['approved', 'rejected', 'revoked', 'age_rejection_pending', 'joined_age_rejected'].includes(app.status)) return false;
+  let app = activeCode ? data.applications[activeCode] : null;
+
+  if (!app || !aliasesMatch(identityAliases(app), identityAliases(sender)) || closedStatuses.includes(app.status)) {
+    // A primeira mensagem privada pode ser diretamente a apresentação.
+    const pending = Object.values(data.applications)
+      .filter(item =>
+        aliasesMatch(identityAliases(item), identityAliases(sender)) && (
+          ['awaiting', 'collecting', 'incomplete', 'awaiting_age_confirmation'].includes(item.status) ||
+          (['ready', 'review'].includes(item.status) && item.ageConfirmed !== true)
+        )
+      )
+      .sort((a, b) => String(b.requestedAt || '').localeCompare(String(a.requestedAt || '')));
+
+    if (pending.length > 1) {
+      const choices = pending.slice(0, 8)
+        .map(item => `• *${item.groupName || 'Grupo'}*: !apresentação ${item.code}`)
+        .join('\n');
+
+      await sock.sendMessage(remoteJid, {
+        text: `Você tem mais de uma solicitação pendente. Escolha o grupo usando o código recebido:\n\n${choices}`
+      });
+      return true;
+    }
+
+    if (pending.length === 0) return false;
+
+    app = pending[0];
+    app.participant = sender;
+    app.participantPn = sender;
+    data.activeByApplicant[sender] = app.code;
+    app.status = app.pendingAgeConfirmation != null
+      ? 'awaiting_age_confirmation'
+      : (app.photoReceived || Object.keys(app.fields || {}).length ? 'incomplete' : 'collecting');
+    app.startedAt ||= new Date().toISOString();
+    saveData(data);
+
+    console.log(`[APRESENTAÇÃO] Início automático pela primeira mensagem: código ${app.code}`);
+  }
+
+  if (!app || !aliasesMatch(identityAliases(app), identityAliases(sender)) || closedStatuses.includes(app.status)) return false;
+  // Só deduplica depois de confirmar que a pessoa tem uma apresentação ativa;
+  // comandos privados de outros módulos continuam seguindo o fluxo normal.
+  if (isDuplicateApplicantPrivateMessage(msg, remoteJid)) return true;
   const cfg = getGroupConfig(data, app.groupJid, app.groupName);
   if (!isGroupBotEnabled(app.groupJid)) {
     if (!wasGroupPauseRecentlyNotified(app.groupJid)) {
@@ -1305,6 +1631,16 @@ async function editClauses(ctx, args) {
     const value = parseOnOff(restText);
     if (value === null) { await ctx.send(ctx.jid, 'Use !clausulas relacionamento on ou !clausulas relacionamento off.', ctx.msg); return true; }
     cfg.requireNoRelationship = value;
+  } else if (action === 'convite') {
+    const mode = normalizeLabel(restText);
+    if (['texto', 'text', 'sem botoes', 'sem botao'].includes(mode)) {
+      cfg.inviteMode = 'text';
+    } else if (['botoes', 'botao', 'buttons', 'button'].includes(mode)) {
+      cfg.inviteMode = 'buttons';
+    } else {
+      await ctx.send(ctx.jid, 'Escolha o formato do convite: !clausulas convite texto ou !clausulas convite botoes.', ctx.msg);
+      return true;
+    }
   } else if (action === 'campo') {
     const match = restText.match(/^([a-zA-ZÀ-ÿ() ]+)\s+(on|off)$/i);
     if (!match) { await ctx.send(ctx.jid, 'Use !clausulas campo instagram off ou !clausulas campo todos on/off. Campos: foto, nome, idade, comum, cargo, instagram, batizado, estado civil e pv liberado.', ctx.msg); return true; }
@@ -1356,7 +1692,8 @@ async function listRequests(ctx) {
       publication_pending_after_join: 'entrada confirmada — publicação pendente'
     };
     const status = labels[app.status] || app.status;
-    return `• ${app.code} — ${status}`;
+    const dm = app.dmError ? `\n  ↳ PV não enviado: ${String(app.dmError).slice(0, 120)}` : '';
+    return `• ${app.code} — ${status}${dm}`;
   }).join('\n');
   await ctx.send(ctx.jid, `📨 SOLICITAÇÕES (${items.length})\n\n${text}\n\nUse !aprovarsolicitacao CÓDIGO ou !recusarsolicitacao CÓDIGO.`, ctx.msg);
   return true;
@@ -1394,7 +1731,20 @@ async function decideRequest(ctx, code, approve) {
       app.approvalRequestedAt = new Date().toISOString();
       saveData(data);
     }
-    const result = await ctx.sock.groupRequestParticipantsUpdate(ctx.jid, [app.participant], approve ? 'approve' : 'reject');
+    const groupParticipant = app.groupParticipant || app.participantLid || app.participant;
+    // Em registros antigos, o PN pode não ter sido salvo. Tenta resolver o LID
+    // novamente antes de concluir a decisão para que o aviso no PV não se perca.
+    const resolvedPrivateJid = await resolvePrivateJid(ctx.sock, {
+      participantPn: app.participantPn || (String(app.participant || '').endsWith('@s.whatsapp.net') ? app.participant : ''),
+      participantLid: app.participantLid || (String(groupParticipant || '').endsWith('@lid') ? groupParticipant : ''),
+      groupParticipant
+    });
+    const privateJid = selectPrivateRecipient(resolvedPrivateJid, app.participantPn, app.participant);
+    if (privateJid) {
+      app.participantPn = privateJid;
+      app.participant = privateJid;
+    }
+    const result = await ctx.sock.groupRequestParticipantsUpdate(ctx.jid, [groupParticipant], approve ? 'approve' : 'reject');
     const ok = Array.isArray(result) && result.some(row => String(row.status || '200') === '200');
     if (!ok) throw new Error('O WhatsApp não confirmou a operação.');
     if (approve) {
@@ -1405,10 +1755,20 @@ async function decideRequest(ctx, code, approve) {
       app.rejectedAt = new Date().toISOString();
     }
     saveData(data);
-    await ctx.sock.sendMessage(app.participant, { text: approve
-      ? `✅ O WhatsApp recebeu a aprovação da sua solicitação para *${cfg.groupName || 'o grupo'}*. Sua apresentação será publicada somente quando sua entrada for confirmada.`
-      : `Sua solicitação para *${cfg.groupName || 'o grupo'}* não foi aprovada pelos administradores.` }).catch(() => {});
-    await ctx.send(ctx.jid, approve ? `✅ Aprovação solicitada para ${app.code}. Aguardando o WhatsApp confirmar a entrada.` : `⛔ Solicitação ${app.code} recusada.`, ctx.msg);
+    let privateNotice = '';
+    if (privateJid) {
+      try {
+        await ctx.sock.sendMessage(privateJid, { text: approve
+          ? `✅ O WhatsApp recebeu a aprovação da sua solicitação para *${cfg.groupName || 'o grupo'}*. Sua apresentação será publicada somente quando sua entrada for confirmada.`
+          : `Sua solicitação para *${cfg.groupName || 'o grupo'}* não foi aprovada pelos administradores.` });
+      } catch (error) {
+        privateNotice = `\n⚠️ A decisão foi enviada ao WhatsApp, mas não consegui avisar no PV: ${String(error?.message || error).slice(0, 120)}`;
+        console.warn('[ENTRADA] Falha ao notificar solicitante após decisão:', error?.stack || error);
+      }
+    } else {
+      privateNotice = '\n⚠️ O pedido foi processado, mas não consegui obter um endereço válido para enviar a confirmação no PV.';
+    }
+    await ctx.send(ctx.jid, (approve ? `✅ Aprovação solicitada para ${app.code}. Aguardando o WhatsApp confirmar a entrada.` : `⛔ Solicitação ${app.code} recusada.`) + privateNotice, ctx.msg);
   } catch (error) {
     if (approve && app.status === 'approval_pending') app.status = 'ready';
     saveData(data);
@@ -1440,6 +1800,10 @@ export async function handleJoinApprovalCommand(ctx) {
 
 export const __test = {
   normalizeJid,
+  identityAliases,
+  aliasesMatch,
+  participantIdentity,
+  resolvePrivateJid,
   normalizeLabel,
   parseApplicationText,
   evaluateApplication,
@@ -1451,5 +1815,56 @@ export const __test = {
   assignApplicationValue,
   parseBoolean,
   publicPresentationText,
+  selectPrivateRecipient,
+  shouldSendAdminNotice,
   TRANSIENT_PHOTOS
 };
+
+
+// LEO_JOIN_DM_DELIVERY_TRACKING_V1
+const JOIN_DM_STATUS_NAMES = Object.freeze({
+  0: 'error',
+  1: 'pending',
+  2: 'server_ack',
+  3: 'delivered',
+  4: 'read',
+  5: 'played'
+});
+const JOIN_DM_STATUS_RANK = Object.freeze({ pending: 1, server_ack: 2, delivered: 3, read: 4, played: 5 });
+
+export function handleJoinMessageUpdates(updates) {
+  const events = Array.isArray(updates) ? updates : [updates];
+  if (!events.length) return 0;
+  const data = loadData();
+  let changed = 0;
+  const now = new Date().toISOString();
+
+  for (const event of events) {
+    const messageId = String(event?.key?.id || '');
+    const statusCode = Number(event?.update?.status);
+    const state = JOIN_DM_STATUS_NAMES[statusCode];
+    if (!messageId || !state) continue;
+
+    const app = Object.values(data.applications || {}).find(item => item.dmMessageId === messageId);
+    if (!app) continue;
+
+    const previousRank = JOIN_DM_STATUS_RANK[app.dmDeliveryState] || 0;
+    const nextRank = JOIN_DM_STATUS_RANK[state] || 0;
+    if (statusCode !== 0 && nextRank < previousRank) continue;
+
+    app.dmDeliveryState = state;
+    app.dmDeliveryStatusCode = statusCode;
+    app.dmDeliveryUpdatedAt = now;
+    if (statusCode === 0) {
+      app.dmDeliveryError = String(event?.update?.message || event?.update?.error || 'O WhatsApp marcou a mensagem como erro.').slice(0, 240);
+    } else if (statusCode >= 3) {
+      app.dmDeliveredAt ||= now;
+      if (statusCode >= 4) app.dmReadAt ||= now;
+    }
+    console.log('[ENTRADA] Status do convite ' + app.code + ': ' + state + ' (ID ' + messageId + ').');
+    changed++;
+  }
+
+  if (changed) saveData(data);
+  return changed;
+}
