@@ -1,0 +1,35 @@
+CORREÇÃO DO SISTEMA DE ENTRADA/APRESENTAÇÃO — LÉO STICKERS
+
+O pacote atualiza somente:
+- codigo/join-approval.js
+- tests/join-approval-regression.test.mjs (novo teste, sem substituir os testes existentes)
+
+O que muda:
+- evita avisos repetidos no grupo para a mesma solicitação por 6 horas;
+- evita processar em paralelo eventos duplicados do mesmo pedido;
+- não tenta enviar mensagem privada para endereços @lid; exige um número @s.whatsapp.net resolvido;
+- registra no terminal se o evento trouxe PN/LID e se o número privado foi resolvido.
+
+INSTALAÇÃO (com o bot parado):
+
+1. No Termux, pressione Ctrl+C para parar o bot.
+2. Entre na pasta do projeto e faça backup:
+   cd ~/BotFigurinhas || exit 1
+   cp codigo/join-approval.js "codigo/join-approval.js.bak-$(date +%Y%m%d-%H%M%S)"
+3. Extraia o pacote:
+   tar -xzf /sdcard/Download/leo-stickers-fix-aprovacao-antispam.tar.gz -C ~/BotFigurinhas
+4. Valide:
+   node --check codigo/join-approval.js
+   npm test
+5. Inicie:
+   npm start
+
+IMPORTANTE:
+- Não apague a pasta sessao.
+- Não apague join-approval-data.json; ela contém solicitações e configurações existentes.
+- Este pacote não substitui index.js, .env, sessão, banco de dados, figurinhas ou demais módulos.
+
+TESTE REAL:
+Depois de iniciar, faça uma nova solicitação de entrada em um grupo de teste.
+No terminal, observe as linhas [ENTRADA] Solicitação e [ENTRADA] Convite enviado ao PV.
+Se aparecer PN resolvido=false, o evento não forneceu um número que o bot consiga resolver; se PN resolvido=true e o convite falhar, copie a linha [ENTRADA] Falha ao enviar convite no PV e a mensagem do erro para diagnóstico.

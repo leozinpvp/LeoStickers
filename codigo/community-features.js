@@ -177,16 +177,252 @@ export async function sendCoupleMedia(ctx, command, caption, mentions = [], imag
 
 function loadData() {
   if (cachedData) return cachedData;
-  try {
-    const parsed = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-    cachedData = parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    cachedData = {};
-  }
-  cachedData.groups ||= {};
-  return cachedData;
-}
 
+  let data = {};
+
+  if (fs.existsSync(DATA_FILE)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('O conteúdo não é um objeto JSON válido.');
+      }
+
+      data = parsed;
+    } catch (error) {
+      throw new Error(
+        'Não foi possível ler community-data.json com segurança: ' +
+        String(error?.message || error)
+      );
+    }
+  }
+
+  data.groups ||= {};
+
+  // LEO_GLOBAL_COUPLES_V1
+  // Migra os casamentos e pedidos antigos de cada grupo para o cadastro global.
+  if (Number(data.globalCoupleVersion || 0) < 1) {
+    const samePerson = (one, two) => aliasesMatch(
+      new Set(Array.isArray(one?.aliases) ? one.aliases : []),
+      new Set(Array.isArray(two?.aliases) ? two.aliases : [])
+    );
+
+    const samePair = (one, two) =>
+      (samePerson(one.a, two.a) && samePerson(one.b, two.b)) ||
+      (samePerson(one.a, two.b) && samePerson(one.b, two.a));
+
+    const validProfile = profile =>
+      Array.isArray(profile?.aliases) && profile.aliases.length > 0;
+
+    const conflicts = Array.isArray(data.coupleMigrationConflicts)
+      ? data.coupleMigrationConflicts
+      : [];
+
+    const previousConflictCount = conflicts.length;
+    const coupleCandidates = [];
+    const proposalCandidates = [];
+
+    for (const couple of Array.isArray(data.couples) ? data.couples : []) {
+      coupleCandidates.push({
+        couple,
+        sourceGroup: 'global-anterior'
+      });
+    }
+
+    for (const proposal of Array.isArray(data.proposals) ? data.proposals : []) {
+      proposalCandidates.push({
+        proposal,
+        sourceGroup: 'global-anterior'
+      });
+    }
+
+    for (const [groupJid, group] of Object.entries(data.groups)) {
+      if (!group || typeof group !== 'object') continue;
+
+      for (const couple of Array.isArray(group.couples) ? group.couples : []) {
+        coupleCandidates.push({ couple, sourceGroup: groupJid });
+      }
+
+      for (const proposal of Array.isArray(group.proposals) ? group.proposals : []) {
+        proposalCandidates.push({ proposal, sourceGroup: groupJid });
+      }
+    }
+
+    coupleCandidates.sort((left, right) => {
+      const a = Date.parse(left.couple?.startedAt);
+      const b = Date.parse(right.couple?.startedAt);
+      return (Number.isFinite(a) ? a : Number.MAX_SAFE_INTEGER) -
+             (Number.isFinite(b) ? b : Number.MAX_SAFE_INTEGER);
+    });
+
+    data.couples = [];
+
+    for (const item of coupleCandidates) {
+      const couple = item.couple;
+
+      if (!validProfile(couple?.a) || !validProfile(couple?.b) ||
+          samePerson(couple.a, couple.b)) {
+        conflicts.push({
+          type: 'couple',
+          sourceGroup: item.sourceGroup,
+          reason: 'registro-invalido',
+          record: couple,
+          archivedAt: new Date().toISOString()
+        });
+        continue;
+      }
+
+      const duplicate = data.couples.find(existing => samePair(existing, couple));
+
+      if (duplicate) {
+        const oldDate = Date.parse(duplicate.startedAt);
+        const newDate = Date.parse(couple.startedAt);
+
+        if (Number.isFinite(newDate) &&
+            (!Number.isFinite(oldDate) || newDate < oldDate)) {
+          Object.assign(duplicate, couple);
+        }
+
+        continue;
+      }
+
+      const occupied = data.couples.find(existing =>
+        samePerson(existing.a, couple.a) ||
+        samePerson(existing.a, couple.b) ||
+        samePerson(existing.b, couple.a) ||
+        samePerson(existing.b, couple.b)
+      );
+
+      if (occupied) {
+        conflicts.push({
+          type: 'couple',
+          sourceGroup: item.sourceGroup,
+          reason: 'participante-ja-casado-em-outro-registro',
+          record: couple,
+          archivedAt: new Date().toISOString()
+        });
+        continue;
+      }
+
+      data.couples.push(couple);
+    }
+
+    proposalCandidates.sort((left, right) => {
+      const a = Date.parse(left.proposal?.createdAt);
+      const b = Date.parse(right.proposal?.createdAt);
+      return (Number.isFinite(a) ? a : Number.MAX_SAFE_INTEGER) -
+             (Number.isFinite(b) ? b : Number.MAX_SAFE_INTEGER);
+    });
+
+    data.proposals = [];
+    const cutoff = Date.now() - 86400000;
+
+    for (const item of proposalCandidates) {
+      const proposal = item.proposal;
+      const createdAt = Date.parse(proposal?.createdAt);
+
+      if (!validProfile(proposal?.from) || !validProfile(proposal?.to) ||
+          samePerson(proposal.from, proposal.to) ||
+          !Number.isFinite(createdAt) || createdAt < cutoff) {
+        continue;
+      }
+
+      const married = data.couples.some(couple =>
+        samePerson(couple.a, proposal.from) ||
+        samePerson(couple.a, proposal.to) ||
+        samePerson(couple.b, proposal.from) ||
+        samePerson(couple.b, proposal.to)
+      );
+
+      if (married) {
+        conflicts.push({
+          type: 'proposal',
+          sourceGroup: item.sourceGroup,
+          reason: 'participante-ja-casado',
+          record: proposal,
+          archivedAt: new Date().toISOString()
+        });
+        continue;
+      }
+
+      const duplicate = data.proposals.some(existing =>
+        samePerson(existing.from, proposal.from) &&
+        samePerson(existing.to, proposal.to)
+      );
+
+      if (duplicate) continue;
+
+      const occupied = data.proposals.some(existing =>
+        samePerson(existing.from, proposal.from) ||
+        samePerson(existing.from, proposal.to) ||
+        samePerson(existing.to, proposal.from) ||
+        samePerson(existing.to, proposal.to)
+      );
+
+      if (occupied) {
+        conflicts.push({
+          type: 'proposal',
+          sourceGroup: item.sourceGroup,
+          reason: 'participante-em-outro-pedido-pendente',
+          record: proposal,
+          archivedAt: new Date().toISOString()
+        });
+        continue;
+      }
+
+      data.proposals.push(proposal);
+    }
+
+    data.coupleMigrationConflicts = conflicts;
+    data.globalCoupleVersion = 1;
+
+    // Backup do banco privado antes de salvar a migração.
+    let tempPath = '';
+
+    try {
+      if (fs.existsSync(DATA_FILE)) {
+        const backupPath =
+          DATA_FILE + '.backup-global-casais-' + Date.now() + '-' + process.pid;
+
+        fs.copyFileSync(DATA_FILE, backupPath, fs.constants.COPYFILE_EXCL);
+        console.log('📁 Backup dos dados: ' + backupPath);
+      }
+
+      tempPath = DATA_FILE + '.tmp-' + process.pid;
+      fs.writeFileSync(tempPath, JSON.stringify(data, null, 2));
+      fs.renameSync(tempPath, DATA_FILE);
+
+    } catch (error) {
+      if (tempPath) {
+        try {
+          fs.rmSync(tempPath, { force: true });
+        } catch {}
+      }
+
+      throw new Error(
+        'Falha ao salvar a migração dos casais: ' +
+        String(error?.message || error)
+      );
+    }
+
+    console.log(
+      '💍 Migração global preparada: ' +
+      data.couples.length + ' casamento(s), ' +
+      data.proposals.length + ' pedido(s) pendente(s).'
+    );
+
+    console.log(
+      '🗃️ Registros em arquivo de conflitos: ' +
+      (conflicts.length - previousConflictCount)
+    );
+  }
+
+  data.couples ||= [];
+  data.proposals ||= [];
+
+  cachedData = data;
+  return data;
+}
 function saveData(data) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
   cachedData = data;
@@ -325,8 +561,6 @@ function groupData(data, jid) {
   data.groups[jid] ||= {};
   const group = data.groups[jid];
   group.muted ||= [];
-  group.couples ||= [];
-  group.proposals ||= [];
   return group;
 }
 
@@ -539,11 +773,13 @@ async function proposalCommand(ctx) {
     return true;
   }
   const data = loadData();
-  const record = groupData(data, ctx.jid);
+  data.couples ||= [];
+  data.proposals ||= [];
+  const record = data;
   const senderSet = new Set(sender.aliases);
   const targetSet = new Set(target.aliases);
   if (coupleFor(record, senderSet) || coupleFor(record, targetSet)) {
-    await ctx.send(ctx.jid, '💍 Uma das pessoas já está em um casamento registrado neste grupo.', ctx.msg);
+    await ctx.send(ctx.jid, '💍 Uma das pessoas já está em um casamento registrado no Léo Stickers.', ctx.msg);
     return true;
   }
   record.proposals = record.proposals.filter(item => Date.now() - Date.parse(item.createdAt) < 86400000);
@@ -576,7 +812,9 @@ async function answerProposal(ctx, accept) {
     return true;
   }
   const data = loadData();
-  const record = groupData(data, ctx.jid);
+  data.couples ||= [];
+  data.proposals ||= [];
+  const record = data;
   const cutoff = Date.now() - 86400000;
   record.proposals = record.proposals.filter(item => Date.parse(item.createdAt) >= cutoff);
   const index = record.proposals.findIndex(item => aliasesMatch(new Set(sender.aliases), new Set(item.to?.aliases || [])));
@@ -613,16 +851,18 @@ async function coupleCommand(ctx, command) {
     return true;
   }
   const data = loadData();
-  const record = groupData(data, ctx.jid);
+  data.couples ||= [];
+  data.proposals ||= [];
+  const record = data;
 
   if (command === 'casados') {
     if (!record.couples.length) {
-      await ctx.send(ctx.jid, '💍 Ainda não há casais registrados neste grupo. Use !casacomigo @pessoa.', ctx.msg);
+      await ctx.send(ctx.jid, '💍 Ainda não há casais registrados no Léo Stickers. Use !casacomigo @pessoa.', ctx.msg);
       return true;
     }
     const lines = record.couples.map((couple, index) => `${index + 1}. ${couple.a.tag} ❤️ ${couple.b.tag} — ${daysTogether(couple.startedAt)}`);
     const mentions = record.couples.flatMap(couple => [couple.a.jid, couple.b.jid]);
-    await sendCoupleMedia(ctx, 'casados', `💞 CASAIS DO GRUPO\n\n${lines.join('\n')}`, mentions);
+    await sendCoupleMedia(ctx, 'casados', `💞 CASAIS DO LÉO STICKERS — TODOS OS GRUPOS\n\n${lines.join('\n')}`, mentions);
     return true;
   }
 
@@ -658,7 +898,7 @@ async function coupleCommand(ctx, command) {
   const actions = {
     tempocasados: `⏳ Vocês estão juntos há ${duration}!`,
     bodas: `🎉 Feliz bodas! O casal ${sender.tag} ❤️ ${partner.tag} está junto há ${duration}.`,
-    perfilcasal: `💞 PERFIL DO CASAL\n${sender.tag} ❤️ ${partner.tag}\nInício: ${new Date(couple.startedAt).toLocaleDateString('pt-BR')}\nTempo juntos: ${duration}\nCompatibilidade: ${getCompatibility(ctx.jid, sender, partner)}%`,
+    perfilcasal: `💞 PERFIL DO CASAL\n${sender.tag} ❤️ ${partner.tag}\nInício: ${new Date(couple.startedAt).toLocaleDateString('pt-BR')}\nTempo juntos: ${duration}\nCompatibilidade: ${getCompatibility('LEO_STICKERS_GLOBAL_COUPLES', couple.a, couple.b)}%`,
     beijarpar: `😘 ${sender.tag} mandou um beijo virtual para ${partner.tag}!`,
     abracarpar: `🫂 ${sender.tag} deu um abraço virtual apertado em ${partner.tag}!`,
     elogiarpar: `🌹 ${sender.tag} elogiou ${partner.tag}: “Você deixa o dia mais bonito!”`,

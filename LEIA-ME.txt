@@ -1,0 +1,23 @@
+PATCH — PROTEÇÃO CONTRA MENSAGENS PRIVADAS DUPLICADAS
+
+Arquivo substituído no projeto:
+  codigo/join-approval.js
+
+Instalação pelo Termux (na pasta Downloads do Android):
+
+  cd ~/BotFigurinhas || exit 1
+  cp codigo/join-approval.js "codigo/join-approval.js.bak-$(date +%Y%m%d-%H%M%S)"
+  tar -xzf ~/storage/downloads/patch_apresentacao_dedup.tar.gz -C .
+  node --check codigo/join-approval.js
+
+Se o node --check não imprimir erro, o arquivo passou na verificação de sintaxe.
+Depois, reinicie o bot usando o mesmo comando que você já usa normalmente.
+
+O que muda:
+- Deduplica mensagens privadas usando remoteJid + msg.key.id.
+- Mantém os IDs por até 10 minutos, com limite de 1000 entradas em memória.
+- Só aplica a trava a comandos de início de apresentação e mensagens de uma apresentação ativa.
+- Registra no terminal quando ignora uma repetição:
+  [ENTRADA] Mensagem privada repetida ignorada: id=...
+
+A proteção não altera o banco join-approval-data.json.

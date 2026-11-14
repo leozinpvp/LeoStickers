@@ -3,22 +3,18 @@ import webpmux from 'node-webpmux';
 import 'dotenv/config';
 import { searchYouTube, downloadCreativeCommonsVideo, downloadYouTubeAudio } from './codigo/youtube-play.js';
 import {
-  searchGiphy,
-  downloadGiphyResult,
-  saveStickerToLibrary,
-  listLibrary,
-  readLibrarySticker
+  searchGiphy, downloadGiphyResult, saveStickerToLibrary, listLibrary, readLibrarySticker
 } from './codigo/giphy-library.js';
+import { parseStickerSearchArguments, searchIndexedStickers, getStickerIndexStatus, reindexStickerLibrary } from './codigo/intelligent-sticker-search.js';
 import { handleSocialCommand } from './codigo/social-features.js';
+import { ECONOMY_COMMANDS, handleEconomyCommand } from './codigo/economy-professions.js'; // LEO_ECONOMY_COMMANDS_IMPORT_V1
 import { AUDIO_COMMANDS, EXTRA_COMMANDS, GAME_COMMANDS, STICKER_COMMANDS } from './codigo/extra-features.js';
 import {
-  BLACKLIST_COMMANDS,
-  handleBlacklistCommand,
-  handleBlacklistedParticipantUpdate,
-  handleProtectedTargetAction
+  BLACKLIST_COMMANDS, handleBlacklistCommand, handleBlacklistedParticipantUpdate, handleProtectedTargetAction
 } from './codigo/blacklist-features.js';
 import { COMMUNITY_COMMANDS, COUPLE_COMMANDS, handleMutedMessage } from './codigo/community-features.js';
-import { handleApplicantPrivateMessage, handleGroupJoinRequest, resumeGroupJoinRequests } from './codigo/join-approval.js';
+import { handleApplicantPrivateMessage, handleGroupJoinRequest, resumeGroupJoinRequests, handleJoinApprovalCommand, handleJoinMessageUpdates } from './codigo/join-approval.js';
+import { handleRentalCommand, hasActiveRental, isRentalEnforcementEnabled, isRentalExemptCommand, startRentalScheduler } from './codigo/rental-system.js';
 import { handleControlPanelMessage, isGroupBotEnabled, shouldIgnoreGroupMessage, shouldIgnoreGroupTimestamp, preapplyGroupControlCommands, recordInboundMessage, recordConnectionUpdate, recordOutboundMessage } from './codigo/control-panel.js';
 import { ADVANCED_COMMANDS, checkAdvancedRateLimit, handleAdvancedAutoReply, startAdvancedScheduler, handleAdvancedCommand, withAdvancedDownloadQueue } from './codigo/leo-advanced.js'; // LEO_ADVANCED_IMPORT_V1
 import pino from 'pino';
@@ -266,6 +262,7 @@ function menu() {
     'Escolha uma categoria para ver os comandos:',
     '',
     '🧩 !menufigurinhas — Criar, buscar e organizar figurinhas',
+    '💰 !menueconomia — LéoCoins, banco e profissões', // LEO_ECONOMY_MENU_V1
     '🖼️ !menuimagem — Efeitos e edição de imagens',
     '🎲 !menubrincadeiras — 60 brincadeiras com GIFs de anime',
     '🏆 !menujogos — Jogos, desafios e ranking',
@@ -296,15 +293,15 @@ function menuCategory(command) {
     'entrada','autoaceitar','autoaprovarsolicitacao','criarclausulas','clausulas','solicitacoes','aprovarsolicitacao','recusarsolicitacao',
     'mute','desmute','ban','listanegra','tirarlistanegra'
   ];
-  const ownerCommands = ['status','grupos','latencia','painel','reiniciar','backup','restaurar','usuarios','limparcache','logs','bloquear'];
+  const ownerCommands = ['status','grupos','latencia','painel','reiniciar','backup','restaurar','usuarios','limparcache','logs','bloquear','clientes','aluguéis','revogar','aprovaraluguel','recusaraluguel'];
   const imageCommands = [
     'imgcontorno','imgsombra','imgpixel','imgnegativo','imgpb','imgzoom','imgdesfocar',
     'imgespelhar','imggirar','imgbrilho','imgcontraste','imgsaturacao','imgsepia',
     'imgnitidez','imgposter','imgquadrada','imgpaisagem','imgretrato','imgminiatura','imgcompress'
   ];
   const stickerBase = [
-    's','fig','sn','sticker','togif','edit','toimg','texto','moldura',
-    'buscar','importar','precarregar','random','sequencia','mix','colecao',
+    's','fig','sn','sticker','figanimada','togif','edit','toimg','texto','moldura',
+    'buscar','buscarfig','statusbiblioteca','reindexarfigs','importar','precarregar','random','sequencia','mix','colecao',
     'favorito','favoritos','desfavorito','pack','meupack','exportarpack',
     'packaleatorio','packbuscar','estatisticaspack','removerfig','removerfigrec'
   ];
@@ -326,7 +323,7 @@ function menuCategory(command) {
         '\n\nAções de moderação exigem que você seja administrador; remoções também exigem que o bot seja administrador.';
     case 'menudono':
       return '👑 MENU DO DONO\n\n' + list(ownerCommands) +
-        '\n\nComandos exclusivos ou restritos ao proprietário do Léo Stickers.';
+        '\n\n!clientes / !aluguéis — lista solicitações e licenças\n!aprovaraluguel CÓDIGO — aprova após conferir o comprovante\n!recusaraluguel CÓDIGO — recusa a solicitação\n!revogar ID_DO_GRUPO — revoga uma licença.\n\nComandos exclusivos ou restritos ao proprietário do Léo Stickers.';
     case 'menubrincadeiras':
       return '🎲 MENU DE BRINCADEIRAS — ' + GAME_COMMANDS.length + ' COMANDOS / GIFS PERSONALIZADOS\n\n' + games +
         '\n\nCada brincadeira procura uma cena de anime própria e mantém cache separado. Se não houver cena adequada, o bot responde em texto.';
@@ -338,7 +335,7 @@ function menuCategory(command) {
     case 'menufigurinhas':
       return '🧩 MENU DE FIGURINHAS\n\nCRIAÇÃO, BUSCA E BIBLIOTECA\n' + list(stickerBase) +
         '\n\nFERRAMENTAS EXTRAS\n' + list([...STICKER_COMMANDS]) +
-        '\n\nPara efeitos em fotos, use !menuimagem.';
+        '\n\n!s — figurinha deformada (preenche 512×512).\n!fig — figurinha normal (preserva proporção, com margens transparentes quando necessário).\nAmbos aceitam fotos e vídeos; vídeos viram figurinhas animadas de até 10 segundos.\n!sn mantém o modo deformado sem metadados.\n!buscarfig tema [1-10] — pesquisa apenas na biblioteca inteligente.\n!statusbiblioteca — mostra quantas já foram analisadas pelo Gemini.\n!reindexarfigs — comando do dono para analisar o próximo lote.\n\nALUGUEL: !planos, !alugar pro, !renovar e !meualuguel. Aprovação manual pelo dono: !clientes, !aprovaraluguel CÓDIGO, !recusaraluguel CÓDIGO.\nPara efeitos em fotos, use !menuimagem.';
     case 'menuimagem':
       return '🖼️ MENU DE EDIÇÃO DE IMAGENS\n\n' + list(imageCommands) +
         '\n\nEnvie uma imagem junto com o comando ou responda à imagem com o comando.';
@@ -914,6 +911,7 @@ async function autoSaveIncomingSticker(msg) {
     const jid = msg.key?.remoteJid;
 
     if (!jid || jid === 'status@broadcast') return;
+    if (jid.endsWith('@g.us') && isRentalEnforcementEnabled() && !hasActiveRental(jid)) return;
 
     if (!getAutoSaveState(jid)) return;
 
@@ -943,6 +941,7 @@ async function autoSaveIncomingSticker(msg) {
       console.log(
         `🦊 Figurinha salva! Total na biblioteca: ${listLibrary().length}`
       );
+      scheduleLibraryAutoIndex();
     }
   } catch (error) {
     console.error(
@@ -950,6 +949,75 @@ async function autoSaveIncomingSticker(msg) {
       error.message
     );
   }
+}
+
+/* LEO_STICKER_AUTO_INDEX_ALL_V1 */
+let libraryIndexingPromise = null;
+
+const LIBRARY_REINDEX_CYCLE_SIZE = 48;
+const LIBRARY_REINDEX_PAUSE_MS = 5 * 60 * 1000;
+
+function waitLibraryIndexPause() {
+  return new Promise(resolve => setTimeout(resolve, LIBRARY_REINDEX_PAUSE_MS));
+}
+
+function runLibraryIndexing() {
+  if (libraryIndexingPromise) return libraryIndexingPromise;
+
+  libraryIndexingPromise = (async () => {
+    let processed = 0;
+
+    while (true) {
+      const items = listLibrary();
+      const status = getStickerIndexStatus(items);
+
+      if (status.pending === 0) {
+        return { processed, ...status };
+      }
+
+      let result;
+
+      try {
+        result = await reindexStickerLibrary({
+          libraryItems: items,
+          readSticker: readLibrarySticker,
+          limit: LIBRARY_REINDEX_CYCLE_SIZE
+        });
+      } catch (error) {
+        const message = String(error?.message || error);
+
+        console.error('[BUSCA IA] ERRO NA INDEXAÇÃO:', message);
+        if (error?.stack) {
+          console.error('[BUSCA IA] DETALHES:', error.stack);
+        }
+
+        console.warn('[BUSCA IA] Vou tentar novamente em 5 minutos, retomando os adesivos pendentes.');
+        await waitLibraryIndexPause();
+        continue;
+      }
+
+      processed += result.processed;
+
+      if (result.pending > 0) {
+        console.log(
+          `[BUSCA IA] Ciclo concluído: ${result.processed} processadas. ${result.pending} pendentes. Próximo ciclo em 5 minutos.`
+        );
+        await waitLibraryIndexPause();
+      } else if (result.processed === 0) {
+        return { processed, ...result };
+      }
+    }
+  })().finally(() => {
+    libraryIndexingPromise = null;
+  });
+
+  return libraryIndexingPromise;
+}
+
+function scheduleLibraryAutoIndex() {
+  runLibraryIndexing().catch(error => {
+    console.error('[BUSCA IA] Falha na indexação automática:', error?.message || error);
+  });
 }
 
 function runFFmpeg(buffer, args) {
@@ -988,77 +1056,149 @@ function runFFmpeg(buffer, args) {
   });
 }
 
-async function createSticker(target, withoutMetadata = false) {
+// LEO_ANIMATED_STICKER_CONVERSION_V1
+async function createSticker(target, withoutMetadata = false, forceAnimated = false, geometry = 'distort') {
+  if (!target || !['imageMessage', 'videoMessage'].includes(target.type)) {
+    throw new Error('Envie uma foto ou vídeo com !s ou !fig, ou responda à mídia com o comando.');
+  }
+  const preserveAspectRatio = geometry === 'fit';
+  const videoFilter = preserveAspectRatio
+    ? 'scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000,format=yuva420p'
+    : 'scale=512:512:flags=lanczos,format=yuva420p';
+  const imageFilter = preserveAspectRatio
+    ? 'scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000,format=yuva420p'
+    : 'scale=512:512:flags=lanczos,format=yuva420p';
+
   const buffer = await getMedia(target);
 
   if (buffer.length > config.maxMediaMB * 1024 * 1024) {
     throw new Error('Arquivo muito grande.');
   }
 
-  if (target.type === 'videoMessage') {
-    const duration = target.content.videoMessage?.seconds || 0;
+  const animated = target.type === 'videoMessage' || forceAnimated;
+  let finalSticker;
 
-    if (duration > config.maxVideoSeconds) {
-      throw new Error('Vídeo ultrapassa o limite de duração.');
+  if (animated) {
+    const sourceDuration = Number(target.content?.videoMessage?.seconds || 0);
+    const configuredLimit = Number(config.maxVideoSeconds || 10);
+    const allowedSeconds = Math.max(1, Math.min(10, configuredLimit));
+
+    if (sourceDuration > allowedSeconds) {
+      throw new Error(`Vídeo com ${sourceDuration}s. O limite configurado para figurinhas animadas é ${allowedSeconds}s.`);
     }
-  }
 
-  const sticker = await runFFmpeg(buffer, [
-    '-frames:v', '1',
-    '-vf', 'scale=512:512',
-    '-an',
-    '-c:v', 'libwebp',
-    '-quality', String(config.quality),
-    '-f', 'webp'
-  ]);
+    const clipSeconds = Math.min(sourceDuration || allowedSeconds, 10);
+    const profiles = [
+      { fps: 15, quality: 60, seconds: clipSeconds },
+      { fps: 12, quality: 48, seconds: clipSeconds },
+      { fps: 10, quality: 38, seconds: clipSeconds },
+      { fps: 8, quality: 30, seconds: clipSeconds },
+      { fps: 10, quality: 42, seconds: Math.min(6, clipSeconds) },
+      { fps: 8, quality: 32, seconds: Math.min(6, clipSeconds) }
+    ];
 
-  let finalSticker = sticker;
+    let lastSize = 0;
+    let lastError = null;
 
-  if (!withoutMetadata) {
-    const metadata = {
-      'sticker-pack-id': 'leo.stickers',
-      'sticker-pack-name': config.packName || 'Léo Stickers',
-      'sticker-pack-publisher': config.authorName || 'Léo',
-      'emojis': ['']
-    };
-  
-    const jsonBuffer = Buffer.from(JSON.stringify(metadata), 'utf8');
-  
-    const exifHeader = Buffer.from([
-      0x49, 0x49, 0x2A, 0x00,
-      0x08, 0x00, 0x00, 0x00,
-      0x01, 0x00, 0x41, 0x57,
-      0x07, 0x00, 0x00, 0x00,
-      0x00, 0x00, 0x16, 0x00,
-      0x00, 0x00
-    ]);
-  
-    exifHeader.writeUInt32LE(jsonBuffer.length, 14);
-  
-    const exif = Buffer.concat([exifHeader, jsonBuffer]);
-  
-    const image = new webpmux.Image();
-    await image.load(sticker);
-    image.exif = exif;
-  
-    const tempPath = path.resolve(
-      `./sticker-temp-${process.pid}-${Date.now()}.webp`
-    );
-  
-    try {
-      await image.save(tempPath);
-      finalSticker = fs.readFileSync(tempPath);
-    } finally {
-      if (fs.existsSync(tempPath)) {
-        fs.unlinkSync(tempPath);
+    for (const profile of profiles) {
+      try {
+        const candidate = await runFFmpeg(buffer, [
+          '-t', String(profile.seconds),
+          '-vf',
+          `fps=${profile.fps},${videoFilter}`,
+          '-an',
+          '-c:v', 'libwebp_anim',
+          '-lossless', '0',
+          '-quality', String(profile.quality),
+          '-compression_level', '6',
+          '-loop', '0',
+          '-f', 'webp'
+        ]);
+
+        const isWebP = candidate.length >= 12 &&
+          candidate.subarray(0, 4).toString() === 'RIFF' &&
+          candidate.subarray(8, 12).toString() === 'WEBP';
+        const hasAnimation = candidate.includes(Buffer.from('ANIM')) &&
+          candidate.includes(Buffer.from('ANMF'));
+
+        if (!isWebP || !hasAnimation) {
+          throw new Error('O FFmpeg não produziu um WebP animado válido.');
+        }
+
+        lastSize = candidate.length;
+        if (candidate.length <= 500 * 1024) {
+          finalSticker = candidate;
+          break;
+        }
+      } catch (error) {
+        lastError = error;
+        if (/Unknown encoder|Encoder .* not found|libwebp_anim/i.test(String(error?.message || error))) {
+          throw new Error('Este FFmpeg não oferece o encoder libwebp_anim. Atualize o FFmpeg no Termux com: pkg upgrade ffmpeg');
+        }
       }
     }
-  
-  
+
+    if (!finalSticker) {
+      if (lastError && !lastSize) throw lastError;
+      throw new Error(`Não consegui reduzir a animação para 500 KB (resultado final: ${Math.ceil(lastSize / 1024)} KB). Envie um vídeo mais curto ou com menos movimento.`);
+    }
+  } else {
+    const qualities = [
+      Math.max(30, Math.min(90, Number(config.quality) || 80)),
+      60, 45, 30
+    ].filter((value, index, array) => array.indexOf(value) === index);
+
+    let lastSize = 0;
+
+    for (const quality of qualities) {
+      const candidate = await runFFmpeg(buffer, [
+        '-frames:v', '1',
+        '-vf',
+        imageFilter,
+        '-an',
+        '-c:v', 'libwebp',
+        '-quality', String(quality),
+        '-compression_level', '6',
+        '-f', 'webp'
+      ]);
+
+      lastSize = candidate.length;
+      if (candidate.length <= 95 * 1024) {
+        finalSticker = candidate;
+        break;
+      }
+    }
+
+    if (!finalSticker) {
+      throw new Error(`A imagem ficou com ${Math.ceil(lastSize / 1024)} KB mesmo após compressão. O limite de figurinha estática é 100 KB; tente uma imagem mais simples.`);
+    }
+
+    if (!withoutMetadata) {
+      const image = new webpmux.Image();
+      await image.load(finalSticker);
+      image.exif = makeStickerExif(
+        config.packName || 'Léo Stickers',
+        config.authorName || 'Léo'
+      );
+
+      const tempPath = path.resolve(
+        `./sticker-temp-${process.pid}-${Date.now()}.webp`
+      );
+
+      try {
+        await image.save(tempPath);
+        finalSticker = fs.readFileSync(tempPath);
+      } finally {
+        if (fs.existsSync(tempPath)) {
+          fs.unlinkSync(tempPath);
+        }
+      }
+    }
   }
 
-  if (finalSticker.length > 1024 * 1024) {
-    throw new Error('Figurinha maior que 1 MB.');
+  const maxBytes = animated ? 500 * 1024 : 100 * 1024;
+  if (finalSticker.length > maxBytes) {
+    throw new Error(`Figurinha ultrapassou o limite de ${animated ? '500 KB' : '100 KB'}.`);
   }
 
   await sock.sendMessage(target.key.remoteJid, {
@@ -1073,7 +1213,6 @@ async function createSticker(target, withoutMetadata = false) {
 
   saveDB();
 }
-
 
 function makeStickerExif(packName, authorName) {
   const metadata = {
@@ -1789,6 +1928,11 @@ async function handleCommand(msg) {
   const command = rawCommand === 'gif' ? 'togif' : rawCommand;
   const value = parts.join(' ');
 
+  if (isGroup && isRentalEnforcementEnabled() && !isOwner(senderJid) && !isRentalExemptCommand(command) && !hasActiveRental(jid)) {
+    await send(jid, '🔒 Este grupo ainda não possui uma licença ativa do Léo Stickers. Um administrador pode usar !planos e !alugar pro para ativar.', msg);
+    return;
+  }
+
   try {
     
     // LEO_ADVANCED_ANTISPAM_HOOK_V1
@@ -1800,6 +1944,7 @@ async function handleCommand(msg) {
     const SOCIAL_COMMANDS = new Set([
       ...ADVANCED_COMMANDS, // LEO_ADVANCED_SOCIAL_COMMANDS_V1
       ...COMMUNITY_COMMANDS,
+      'planos', 'alugar', 'meualuguel', 'clientes', 'aluguéis', 'alugueis', 'renovar', 'revogar', 'revogarrental', 'aprovaraluguel', 'recusaraluguel',
       'favorito', 'favoritos', 'desfavorito',
       'top', 'ranking', 'pack', 'desafio',
       'quiz', 'roleta', 'texto', 'moldura',
@@ -1817,6 +1962,7 @@ async function handleCommand(msg) {
       'entrada', 'autoaceitar', 'autoaprovarsolicitacao', 'criarclausulas', 'clausulas', 'solicitacoes', 'aprovarsolicitacao', 'recusarsolicitacao',
       'imgcontorno', 'imgsombra', 'imgpixel', 'imgnegativo', 'imgpb', 'imgzoom', 'imgdesfocar', 'imgespelhar', 'imggirar', 'imgbrilho', 'imgcontraste', 'imgsaturacao', 'imgsepia', 'imgnitidez', 'imgposter', 'imgquadrada', 'imgpaisagem', 'imgretrato', 'imgminiatura', 'imgcompress', 'stcontorno', 'stsombra', 'stpixel', 'stnegativo', 'stpb', 'stzoom', 'stdesfocar', 'stespelhar', 'stgirar', 'stbrilho', 'stcontraste', 'stsaturacao', 'stsepia', 'stnitidez', 'stposter', 'stquadrada', 'stvertical', 'sthorizontal', 'stmini', 'stmaxi',
       ...EXTRA_COMMANDS,
+      ...ECONOMY_COMMANDS, // LEO_ECONOMY_COMMANDS_V1
       ...BLACKLIST_COMMANDS
     ]);
 
@@ -1848,8 +1994,18 @@ async function handleCommand(msg) {
           )
       };
 
+      // LEO_RENTAL_COMMAND_DISPATCH_V1
+      const rentalHandled = await handleRentalCommand(context);
+      if (rentalHandled) return;
+
+      // LEO_JOIN_APPROVAL_DISPATCH_V2
+      const joinApprovalHandled = await handleJoinApprovalCommand(context);
+      if (joinApprovalHandled) return;
+
       // LEO_ADVANCED_DISPATCH_V1
-      if (ADVANCED_COMMANDS.includes(command)) {
+      if (ECONOMY_COMMANDS.includes(command)) {
+        await handleEconomyCommand(context);
+      } else if (ADVANCED_COMMANDS.includes(command)) {
         await handleAdvancedCommand(context);
       } else if (BLACKLIST_COMMANDS.includes(command)) {
         await handleBlacklistCommand(context);
@@ -1860,6 +2016,57 @@ async function handleCommand(msg) {
     }
 
 switch (command) {
+
+      case 'buscarfig': {
+        let parsed;
+        try { parsed = parseStickerSearchArguments(value); }
+        catch (error) { await send(jid, `🔎 ${error.message}`, msg); break; }
+        const items = listLibrary();
+        const status = getStickerIndexStatus(items);
+        if (!status.indexed) {
+          await send(jid, `🧠 A biblioteca ainda não tem índice inteligente. O dono deve executar !reindexarfigs para o Gemini analisar as figurinhas.\nFigurinhas: ${status.total}`, msg);
+          break;
+        }
+        const results = searchIndexedStickers(parsed.query, items, parsed.amount);
+        if (!results.length) {
+          await send(jid, `🔎 Não encontrei figurinhas para *${parsed.query}* entre as ${status.indexed} já analisadas.\nÍndice pendente: ${status.pending}. Use !reindexarfigs para ampliar a busca.`, msg);
+          break;
+        }
+        await send(jid, `🧠 Encontrei ${results.length} figurinha(s) para *${parsed.query}*.`, msg);
+        let sentCount = 0;
+        for (const item of results) {
+          try {
+            const stickerBuffer = readLibrarySticker(item.filename);
+            await sock.sendMessage(jid, { sticker: stickerBuffer, mimetype: 'image/webp' }, { quoted: msg });
+            sentCount++;
+          } catch (error) {
+            console.warn('[BUSCA IA] Não consegui enviar figurinha da biblioteca:', item.filename, error?.message || error);
+          }
+        }
+        if (sentCount < results.length) await send(jid, `⚠️ Enviei ${sentCount} de ${results.length}; alguns arquivos não puderam ser lidos.`, msg);
+        break;
+      }
+
+      case 'statusbiblioteca': {
+        const status = getStickerIndexStatus(listLibrary());
+        await send(jid, `🦊 BIBLIOTECA INTELIGENTE\n\nFigurinhas: ${status.total}\nAnalisadas pelo Gemini: ${status.indexed}\nPendentes: ${status.pending}\nRegistros antigos removidos: ${status.stale}\nModelo: ${status.model}\nÚltima atualização: ${status.updatedAt ? new Date(status.updatedAt).toLocaleString('pt-BR') : 'ainda não iniciada'}\n\nDono: use !reindexarfigs para analisar o próximo lote.`, msg);
+        break;
+      }
+
+      case 'reindexarfigs': {
+        if (!isOwner(senderJid)) {
+          await send(jid, '❌ Somente o dono pode iniciar a análise da biblioteca.', msg);
+          break;
+        }
+        try {
+          await send(jid, '🧠 Gemini está analisando um lote da biblioteca. Isso pode levar um pouco, dependendo do tamanho das imagens.', msg);
+          const result = await runLibraryIndexing();
+          await send(jid, `✅ Análise concluída.\nProcessadas nesta execução: ${result.processed}\nAnalisadas: ${result.indexed}/${result.total}\nPendentes: ${result.pending}\n${result.pending ? 'A análise parou sem progresso. Confira os logs.' : 'A biblioteca atual está totalmente indexada.'}`, msg);
+        } catch (error) {
+          await send(jid, `❌ Não consegui indexar a biblioteca: ${String(error?.message || error).slice(0, 220)}\nConfira GEMINI_API_KEY no .env e tente novamente.`, msg);
+        }
+        break;
+      }
 
       
       case 'play': {
@@ -2154,19 +2361,18 @@ Usuários: ${Object.keys(db.users).length}`,
 
       case 'fig': {
         if (isViewOnceTarget(msg)) {
-          await send(jid, '🔒 Peça o reenvio normal da imagem.', msg);
+          await send(jid, '🔒 Peça o reenvio normal da imagem ou vídeo.', msg);
           break;
         }
 
         const target = findMedia(msg);
-
-        if (!target || target.type !== 'imageMessage') {
-          await send(jid, 'Envie uma foto com !fig ou responda a uma foto com !fig.', msg);
+        if (!target || !['imageMessage', 'videoMessage'].includes(target.type)) {
+          await send(jid, 'Envie uma foto ou vídeo com !fig, ou responda à mídia com !fig.', msg);
           break;
         }
 
-        await send(jid, '🦊 Criando figurinha sem deformação e sem bordas...', msg);
-        await createFig(target, jid, msg);
+        await send(jid, '🦊 Criando figurinha no modo normal, preservando a proporção...', msg);
+        await createSticker(target, false, false, 'fit');
         break;
       }
 
@@ -2195,6 +2401,24 @@ Usuários: ${Object.keys(db.users).length}`,
         break;
       }
 
+      case 'figanimada': {
+        if (isViewOnceTarget(msg)) {
+          await send(jid, '🔒 Peça o reenvio normal do vídeo.', msg);
+          break;
+        }
+
+        const target = findMedia(msg);
+
+        if (!target || target.type !== 'videoMessage') {
+          await send(jid, 'Envie um vídeo curto (máximo de 10 segundos) com !figanimada ou responda a um vídeo.', msg);
+          break;
+        }
+
+        await send(jid, '🎞️ Convertendo vídeo em figurinha WebP animada...', msg);
+        await createSticker(target, false, true, 'fit');
+        break;
+      }
+
       case 'sn': {
         if (isViewOnceTarget(msg)) {
           await send(jid, '🔒 Peça ao remetente que reenvie a mídia normalmente.', msg);
@@ -2203,7 +2427,7 @@ Usuários: ${Object.keys(db.users).length}`,
 
         const target = findMedia(msg);
 
-        if (!target || target.type === 'stickerMessage') {
+        if (!target || !['imageMessage', 'videoMessage'].includes(target.type)) {
           await send(
             jid,
             'Envie uma foto ou vídeo com !sn, ou responda à mídia com !sn.',
@@ -2212,8 +2436,8 @@ Usuários: ${Object.keys(db.users).length}`,
           break;
         }
 
-        await send(jid, '⏳ Criando figurinha sem metadados...', msg);
-        await createSticker(target, true);
+        await send(jid, '⏳ Criando figurinha deformada sem metadados...', msg);
+        await createSticker(target, true, false, 'distort');
         break;
       }
 
@@ -2235,8 +2459,8 @@ Usuários: ${Object.keys(db.users).length}`,
           break;
         }
 
-        await send(jid, '⏳ Criando figurinha...', msg);
-        await createSticker(target);
+        await send(jid, '⏳ Criando figurinha deformada...', msg);
+        await createSticker(target, false, false, 'distort');
         break;
       }
 
@@ -2834,10 +3058,18 @@ async function start(baileys) {
 
     sock = currentSock;
     installOutgoingMessageQueue(currentSock);
+    startRentalScheduler(currentSock);
 
     let pairingRequested = false;
 
     currentSock.ev.on('creds.update', saveCreds);
+currentSock.ev.on('messages.update', updates => {
+  try {
+    handleJoinMessageUpdates(updates);
+  } catch (error) {
+    console.warn('[ENTRADA] Falha ao registrar confirmação de entrega do convite:', error?.stack || error);
+  }
+});
 
     currentSock.ev.on('group-participants.update', update => {
       if (update?.id && !isGroupBotEnabled(update.id)) { console.log('[CONTROLE] Evento de participantes ignorado: grupo pausado.'); return; } // LEO_CONTROL_GROUP_PARTICIPANTS_GUARD_V1

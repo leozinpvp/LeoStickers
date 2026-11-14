@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "npm run check",
+    "test": "npm run check && node --test tests/*.test.mjs",
     "check": "node scripts/checar-sintaxe.mjs",
     "start": "bash start-bot.sh"
   },

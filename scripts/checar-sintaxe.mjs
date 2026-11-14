@@ -2,86 +2,33 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-const extensions = new Set(['.js', '.mjs', '.cjs']);
-const ignored = new Set([
-  '.git',
-  'node_modules',
-  'backups',
-  'cache',
-  'temp'
-]);
-
+const root = process.cwd();
+const excluded = new Set(['node_modules', '.git', 'auth', 'sessions', 'session', 'creds']);
 const files = [];
 
-function scan(directory) {
-  if (!fs.existsSync(directory)) return;
-
-  for (const entry of fs.readdirSync(directory, {
-    withFileTypes: true
-  })) {
-    const fullPath = path.join(directory, entry.name);
-
+function walk(directory) {
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
     if (entry.isDirectory()) {
-      if (ignored.has(entry.name)) continue;
-      if (entry.name.startsWith('backup-')) continue;
-      if (entry.name.startsWith('backup_')) continue;
-
-      scan(fullPath);
+      if (!excluded.has(entry.name)) walk(path.join(directory, entry.name));
       continue;
     }
-
-    if (extensions.has(path.extname(entry.name))) {
-      files.push(fullPath);
-    }
+    if (entry.isFile() && entry.name.endsWith('.js')) files.push(path.join(directory, entry.name));
   }
 }
 
-if (fs.existsSync('index.js')) {
-  files.push('index.js');
-}
-
-scan('codigo');
-scan('scripts');
-
-const uniqueFiles = [...new Set(files)].sort();
-
-let errors = 0;
-
-console.log('');
-console.log('🦊 LEO STICKERS — VERIFICAÇÃO');
-console.log('==============================');
-console.log('');
-
-for (const file of uniqueFiles) {
-  const result = spawnSync(
-    process.execPath,
-    ['--check', file],
-    { encoding: 'utf8' }
-  );
-
+walk(root);
+let failed = 0;
+for (const file of files) {
+  const result = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });
   if (result.status !== 0) {
-    errors++;
-
-    console.error(`❌ ERRO: ${file}`);
-    console.error(
-      result.stderr ||
-      result.stdout ||
-      'Erro de sintaxe desconhecido.'
-    );
-  } else {
-    console.log(`✅ ${file}`);
+    failed++;
+    process.stderr.write(`\n[ERRO DE SINTAXE] ${path.relative(root, file)}\n${result.stderr || result.stdout}`);
   }
 }
 
-console.log('');
-console.log(`Arquivos analisados: ${uniqueFiles.length}`);
-console.log(`Erros: ${errors}`);
-
-if (errors > 0) {
-  console.error('');
-  console.error('❌ Existem erros de sintaxe.');
-  process.exit(1);
+if (failed) {
+  console.error(`\n${failed} arquivo(s) com erro de sintaxe de ${files.length}.`);
+  process.exitCode = 1;
+} else {
+  console.log(`✅ Sintaxe válida em ${files.length} arquivo(s) JavaScript.`);
 }
-
-console.log('');
-console.log('🦊 Todos os arquivos passaram na verificação!');

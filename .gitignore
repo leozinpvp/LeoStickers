@@ -74,3 +74,10 @@ backup-*/
 *token*.json
 group-bot-control.json
 protection-attempts.json
+
+# Dados persistentes da economia global
+economia-data.json
+
+# Dados locais da busca por IA e do sistema comercial
+rental-data.json
+figurinhas/ia-index.json

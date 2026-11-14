@@ -1,0 +1,34 @@
+CORREÇÃO DO PV PARA SOLICITAÇÕES COM LID — LÉO STICKERS
+
+O problema encontrado:
+O evento do WhatsApp está chegando sem PN, mas com LID. O código anterior descartava o LID na seleção do destinatário e, por isso, nunca tentava mandar o convite privado.
+
+O que esta atualização muda:
+- Continua preferindo o PN (@s.whatsapp.net) quando o WhatsApp o fornece.
+- Quando não existe PN, usa o LID (@lid) recebido no pedido como endereço de conversa.
+- Inclui groupParticipant e participantLid na busca do destinatário, inclusive no primeiro evento.
+- Registra no terminal se o convite saiu usando PN ou LID.
+- Mantém a proteção anti-spam e a deduplicação de avisos.
+- Não altera index.js, package.json, package-lock.json, .env, sessao ou join-approval-data.json.
+
+INSTALAÇÃO (com o bot parado):
+
+1. Pare o bot com Ctrl+C.
+2. Faça backup do módulo atual:
+   cd ~/BotFigurinhas || exit 1
+   cp codigo/join-approval.js "codigo/join-approval.js.bak-$(date +%Y%m%d-%H%M%S)"
+3. Extraia este pacote na raiz do projeto:
+   tar -xzf /sdcard/Download/leo-stickers-fix-pv-lid.tar.gz -C ~/BotFigurinhas
+4. Valide o módulo:
+   node --check codigo/join-approval.js
+   node --test tests/join-approval-regression.test.mjs
+5. Inicie:
+   npm start
+
+TESTE REAL:
+Faça uma nova solicitação de entrada. No terminal, deve aparecer:
+   [ENTRADA] Convite enviado ao PV para a solicitação ABC123 (destino LID).
+ou, quando houver PN:
+   [ENTRADA] Convite enviado ao PV para a solicitação ABC123 (final do número: 1234).
+
+Se aparecer "Falha ao enviar convite no PV", copie essa linha e a mensagem de erro completa. Não apague a pasta sessao nem o arquivo join-approval-data.json.
