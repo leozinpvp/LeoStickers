@@ -1,0 +1,46 @@
+ .gitignore                          |   2 [32m+[m
+ codigo/advanced-features.js         |  17 [32m+[m
+ codigo/blacklist-features.js        | 153 [32m+++++[m
+ codigo/protected-moderation.js      | 299 [32m+++++++++[m
+ figurinhas/biblioteca.json          | 396 [32m++++++++++++[m
+ ...27ba1e68a0808f41c1e861264de.webp | Bin [31m0[m -> [32m51930[m bytes
+ ...092ec9267b84ebb6fa0f40f93d3.webp | Bin [31m0[m -> [32m98022[m bytes
+ ...69e4eec1b0dd0866db22e128b4d.webp | Bin [31m0[m -> [32m94010[m bytes
+ ...3ee5b69882176e6ce8e80601d70.webp | Bin [31m0[m -> [32m84034[m bytes
+ ...2da613307ae251c114c0eec496b.webp | Bin [31m0[m -> [32m75054[m bytes
+ ...473bc8a091ef82cc9e840535566.webp | Bin [31m0[m -> [32m14930[m bytes
+ ...1766e63fef708d90d683b62e766.webp | Bin [31m0[m -> [32m48102[m bytes
+ ...fc027983b741f01a2e320e40899.webp | Bin [31m0[m -> [32m54646[m bytes
+ ...823c20759d204017bcfde2386a2.webp | Bin [31m0[m -> [32m483302[m bytes
+ ...196a0999d0f1b03c576cb8009d2.webp | Bin [31m0[m -> [32m78100[m bytes
+ ...62bd0297631dda2e755f0d45e0e.webp | Bin [31m0[m -> [32m81310[m bytes
+ ...0cb1170e30e69753a582f185f60.webp | Bin [31m0[m -> [32m6076[m bytes
+ ...5bcfbf4a5116479fbc6809b419d.webp | Bin [31m0[m -> [32m16518[m bytes
+ ...f5a1876bc3afd1a2c00aae63d99.webp | Bin [31m0[m -> [32m98684[m bytes
+ ...6aed17b0102e834f7268d623f08.webp | Bin [31m0[m -> [32m74166[m bytes
+ ...31c678e0375aa900de969edc192.webp | Bin [31m0[m -> [32m96724[m bytes
+ ...cf545b5a3966d1d9ed2350fda15.webp | Bin [31m0[m -> [32m89996[m bytes
+ ...58b7a91d675f8091d4ca8a48c93.webp | Bin [31m0[m -> [32m323326[m bytes
+ ...b78690f303f26eca5906742d535.webp | Bin [31m0[m -> [32m56740[m bytes
+ ...88c9ae9d5c2c9a42f46108b72a8.webp | Bin [31m0[m -> [32m87100[m bytes
+ ...e4b04533504cc7487bfe720ecc3.webp | Bin [31m0[m -> [32m28944[m bytes
+ ...2971c6492e1c0d4fa63a9255811.webp | Bin [31m0[m -> [32m96108[m bytes
+ ...ae3968b9d3d7fc3212c71f1f566.webp | Bin [31m0[m -> [32m83080[m bytes
+ ...574655aaa5c100e90e6053f7b73.webp | Bin [31m0[m -> [32m96002[m bytes
+ ...166fdfb0bf96adc6df1f12b762e.webp | Bin [31m0[m -> [32m89784[m bytes
+ ...d42b7cebd589281694385e1c7dd.webp | Bin [31m0[m -> [32m23268[m bytes
+ ...f086793294100a9fca3bf542ec5.webp | Bin [31m0[m -> [32m74808[m bytes
+ ...9cec11f71c3f71bb3402cc3d8d0.webp | Bin [31m0[m -> [32m28182[m bytes
+ ...f22658d740c111d50b2da68f8b8.webp | Bin [31m0[m -> [32m21898[m bytes
+ ...742fc713b843b22cf0895a3093a.webp | Bin [31m0[m -> [32m98738[m bytes
+ ...45903ae68d1f5a21dc9f0430045.webp | Bin [31m0[m -> [32m476656[m bytes
+ ...e2097c7cae5d005b243d5911b9d.webp | Bin [31m0[m -> [32m74974[m bytes
+ ...9b26ace1c9d3e0ae17fa3e4830d.webp | Bin [31m0[m -> [32m213342[m bytes
+ ...691bf2aa4e097df18bf85e0e355.webp | Bin [31m0[m -> [32m97138[m bytes
+ ...f3a8f7350fa8fa48b25d6d47c39.webp | Bin [31m0[m -> [32m190166[m bytes
+ ...85a7ea3b393f00b27beaa866d1a.webp | Bin [31m0[m -> [32m63568[m bytes
+ group-bot-control.json              |  16 [31m-[m
+ index.js                            |  10 [32m+[m[31m-[m
+ package.json                        |   4 [32m+[m[31m-[m
+ scripts/checar-sintaxe.mjs          |  87 [32m+++[m
+ 45 files changed, 965 insertions(+), 19 deletions(-)

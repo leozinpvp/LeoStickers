@@ -1941,6 +1941,7 @@ async function handleCommand(msg) {
       await send(jid, '🛡️ Antispam: aguarde ' + advancedRate.seconds + ' segundo(s) antes de enviar mais comandos.', msg);
       return;
     }
+    // LEO_GROUP_IA_COMMAND_V1
     const SOCIAL_COMMANDS = new Set([
       ...ADVANCED_COMMANDS, // LEO_ADVANCED_SOCIAL_COMMANDS_V1
       ...COMMUNITY_COMMANDS,
@@ -1959,7 +1960,7 @@ async function handleCommand(msg) {
       'mudarnomegrupo', 'mudardescgrupo', 'promover', 'rebaixar', 'remover',
       'marcaradmins', 'marcarmembros', 'aprovar', 'recusar', 'avisar', 'avisos',
       'zeraravisos', 'definirregras', 'regrasgrupo', 'limparavisos',
-      'entrada', 'autoaceitar', 'autoaprovarsolicitacao', 'criarclausulas', 'clausulas', 'solicitacoes', 'aprovarsolicitacao', 'recusarsolicitacao',
+      'entrada', 'autoaceitar', 'autoaprovarsolicitacao', 'criarclausulas', 'clausulas', 'solicitacoes', 'aprovarsolicitacao', 'recusarsolicitacao', 'ia',
       'imgcontorno', 'imgsombra', 'imgpixel', 'imgnegativo', 'imgpb', 'imgzoom', 'imgdesfocar', 'imgespelhar', 'imggirar', 'imgbrilho', 'imgcontraste', 'imgsaturacao', 'imgsepia', 'imgnitidez', 'imgposter', 'imgquadrada', 'imgpaisagem', 'imgretrato', 'imgminiatura', 'imgcompress', 'stcontorno', 'stsombra', 'stpixel', 'stnegativo', 'stpb', 'stzoom', 'stdesfocar', 'stespelhar', 'stgirar', 'stbrilho', 'stcontraste', 'stsaturacao', 'stsepia', 'stnitidez', 'stposter', 'stquadrada', 'stvertical', 'sthorizontal', 'stmini', 'stmaxi',
       ...EXTRA_COMMANDS,
       ...ECONOMY_COMMANDS, // LEO_ECONOMY_COMMANDS_V1

@@ -1,0 +1,23 @@
+LÉO STICKERS — VACINA DE ENTREGA DE CONVITES
+
+O que este pacote corrige:
+- Impede que um endereço @lid seja armazenado como participantPn.
+- Usa o LID como destino privado quando não há PN disponível, sem chamar uma API de mapeamento inexistente.
+- Guarda o ID real da mensagem enviada pelo Baileys.
+- Escuta messages.update e registra ACK do servidor, entrega, leitura, reprodução ou erro.
+- Não apaga dados nem reenvia convites históricos.
+
+INSTALAÇÃO NO TERMUX
+
+1. Coloque o arquivo tar.gz em Downloads.
+2. No Termux, execute:
+
+   cd ~/BotFigurinhas
+   tar -xzf ~/storage/downloads/lid-delivery-vacina.tar.gz
+   node lid-delivery-vacina/install.mjs
+
+Se o arquivo estiver em outra pasta, ajuste apenas o caminho do tar.gz.
+
+O instalador exige ser executado na raiz do projeto e valida a sintaxe antes de substituir os arquivos. Ele cria uma pasta backup-lid-delivery-* com os arquivos originais.
+
+Depois que aparecer “VACINA INSTALADA E SINTAXE VALIDADA”, reinicie o bot e teste com uma nova solicitação de entrada.

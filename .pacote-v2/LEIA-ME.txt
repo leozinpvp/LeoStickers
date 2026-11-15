@@ -1,0 +1,23 @@
+LÉO STICKERS — IMAGENS V2
+
+17 imagens individuais em PNG RGBA com fundo realmente transparente,
+recortadas da nova arte enviada.
+
+Pastas:
+assets/economia/profissoes/  (8)
+assets/economia/loja/        (4)
+assets/economia/ui/          (5)
+
+Instalação no Termux:
+1) Baixe leo_stickers_v2_imagens.tar.gz para Downloads.
+2) Execute:
+   cd ~/BotFigurinhas || exit 1
+   mkdir -p .pacote-v2
+   tar -xzf ~/storage/downloads/leo_stickers_v2_imagens.tar.gz -C .pacote-v2
+   bash .pacote-v2/leo_stickers_v2_instalar.sh
+
+O instalador confere se existem 17 PNGs e faz backup da pasta assets/economia
+anterior antes de copiar os arquivos. Não altera index.js, banco de dados,
+sessão do WhatsApp ou comandos do bot.
+
+A imagem fonte original também está incluída como fonte-original.png.
