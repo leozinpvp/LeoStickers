@@ -1,23 +1,101 @@
-PATCH — PROTEÇÃO CONTRA MENSAGENS PRIVADAS DUPLICADAS
+YAMADA — EXPANSÃO COMPLETA
+==========================
 
-Arquivo substituído no projeto:
-  codigo/join-approval.js
+Conteúdo desta versão:
+- Personalidade livre e independente para a IA do grupo e para a IA das apresentações no PV, salva por grupo.
+- Comando !ia capaz de interpretar um pedido explícito de remoção de participante e encaminhá-lo ao fluxo seguro de !ban, com nova verificação de administrador e confirmação.
+- Correção do !ban para comparar identificadores PN/LID por aliases e proteger administradores, dono do grupo, bot e solicitante.
+- Modelo Gemini 3.8 Flash padronizado nos módulos Gemini do projeto e em GEMINI_MODEL no .env.
+- Cinco recursos de grupo: !impostor, !stop, !tribunal, !lembrete(s) e !campeonato.
 
-Instalação pelo Termux (na pasta Downloads do Android):
+INSTALAÇÃO NO TERMUX
+--------------------
+1. Pare o bot antes de instalar.
+2. Entre na pasta do projeto:
+   cd ~/BotFigurinhas
+3. Extraia o arquivo baixado:
+   tar -xzf /sdcard/Download/yamada-expansao.tar.gz --strip-components=1
+4. Confira a sintaxe do instalador:
+   node --check aplicar-yamada-expansao.mjs
+5. Instale:
+   node aplicar-yamada-expansao.mjs
+6. Quando terminar, rode os testes do projeto:
+   npm test
+7. Reinicie o bot:
+   npm start
 
-  cd ~/BotFigurinhas || exit 1
-  cp codigo/join-approval.js "codigo/join-approval.js.bak-$(date +%Y%m%d-%H%M%S)"
-  tar -xzf ~/storage/downloads/patch_apresentacao_dedup.tar.gz -C .
-  node --check codigo/join-approval.js
+O instalador cria backups com o sufixo .bak-yamada-<data>. Ele não altera a GEMINI_API_KEY; apenas ajusta GEMINI_MODEL para gemini-3.8-flash. O banco de apresentações e os demais bancos do bot não são apagados.
 
-Se o node --check não imprimir erro, o arquivo passou na verificação de sintaxe.
-Depois, reinicie o bot usando o mesmo comando que você já usa normalmente.
+PERSONALIDADES LIVRES
+---------------------
+Os comandos de configuração são exclusivos de administradores do grupo:
 
-O que muda:
-- Deduplica mensagens privadas usando remoteJid + msg.key.id.
-- Mantém os IDs por até 10 minutos, com limite de 1000 entradas em memória.
-- Só aplica a trava a comandos de início de apresentação e mensagens de uma apresentação ativa.
-- Registra no terminal quando ignora uma repetição:
-  [ENTRADA] Mensagem privada repetida ignorada: id=...
+!personalidade jogador de futebol arrogante e engraçado
+!personalidade pv presidente formal e objetivo
+!personalidade ver
+!personalidade reset grupo
+!personalidade reset pv
+!personalidade reset ambos
 
-A proteção não altera o banco join-approval-data.json.
+Também funciona com o formato longo:
+!ia personalidade grupo jogador de futebol
+!ia personalidade pv presidente
+
+O texto é livre (até 700 caracteres). A personalidade muda o estilo de resposta; não muda permissões, validações nem regras de segurança.
+
+IA E MODERAÇÃO
+--------------
+Ative a IA no grupo com !ia on. Depois, um administrador pode escrever, por exemplo:
+
+!ia remova o Kleber
+
+Quando o alvo for identificado sem ambiguidade, o bot prepara a remoção usando o fluxo existente de !ban e pede confirmação. Confirme com !ia confirmar ou desista com !ia cancelar. Se não for possível resolver o nome com segurança, marque a pessoa com @ e repita o pedido.
+
+A IA não recebe permissão para executar comandos arbitrários nem para remover administradores. A ação de remoção exige administrador solicitante, bot administrador e confirmação explícita.
+
+NOVOS COMANDOS
+---------------
+IMPOSTOR
+!impostor iniciar
+!impostor entrar
+!impostor sortear
+!impostor votar @pessoa
+!impostor resultado
+!impostor cancelar
+
+STOP / ADEDONHA
+!stop iniciar
+!stop resposta Nome=Ana; Animal=Anta; País=Angola; Comida=Arroz; Objeto=Anel
+!stop finalizar
+Pontuação: 10 pontos por resposta válida e única; 5 por resposta válida repetida; 0 se estiver vazia ou não começar pela letra sorteada. O bot não consulta um dicionário para validar se cada palavra existe.
+
+TRIBUNAL (APENAS BRINCADEIRA)
+!tribunal @pessoa motivo
+!tribunal defesa texto
+!tribunal voto culpado
+!tribunal voto inocente
+!tribunal encerrar
+Nenhuma punição real é executada pelo tribunal.
+
+LEMBRETES
+!lembrete DD/MM/AAAA HH:MM texto
+!lembretes
+!cancelarlembrete ID
+Horário de Brasília. Limites: 25 lembretes pendentes por grupo e 10 por pessoa. O bot precisa estar ligado para enviar no horário.
+
+CAMPEONATO
+!campeonato criar nome
+!campeonato entrar
+!campeonato sair
+!campeonato iniciar
+!campeonato jogos
+!campeonato resultado @vencedor
+!campeonato cancelar
+Chave eliminatória com até 16 jogadores. O organizador ou um administrador registra os resultados.
+
+OBSERVAÇÕES
+-----------
+- Os jogos e lembretes têm estado separado por ID de grupo, em yamada-fun-data.json.
+- O comando !impostor precisa conseguir enviar uma mensagem privada para cada jogador; se não conseguir, a sala é cancelada.
+- Pare e reinicie o processo Node depois da instalação para carregar os módulos novos.
+- A instalação não envia alterações para o GitHub. Depois de testar no Termux, você pode fazer commit e push quando decidir.

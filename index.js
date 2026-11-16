@@ -7,6 +7,7 @@ import {
 } from './codigo/giphy-library.js';
 import { parseStickerSearchArguments, searchIndexedStickers, getStickerIndexStatus, reindexStickerLibrary } from './codigo/intelligent-sticker-search.js';
 import { handleSocialCommand } from './codigo/social-features.js';
+import { YAMADA_FUN_COMMANDS, handleYamadaFunCommand, startYamadaFunScheduler } from './codigo/yamada-fun.js'; // LEO_YAMADA_EXPANSION_V1
 import { ECONOMY_COMMANDS, handleEconomyCommand } from './codigo/economy-professions.js'; // LEO_ECONOMY_COMMANDS_IMPORT_V1
 import { AUDIO_COMMANDS, EXTRA_COMMANDS, GAME_COMMANDS, STICKER_COMMANDS } from './codigo/extra-features.js';
 import {
@@ -290,7 +291,7 @@ function menuCategory(command) {
     'mudarnomegrupo','mudardescgrupo','promover','rebaixar','remover',
     'marcar','totag','marcaradmins','marcarmembros','aprovar','recusar',
     'avisar','avisos','zeraravisos','limparavisos','definirregras','regrasgrupo',
-    'entrada','autoaceitar','autoaprovarsolicitacao','criarclausulas','clausulas','solicitacoes','aprovarsolicitacao','recusarsolicitacao',
+    'entrada','autoaceitar','autoaprovarsolicitacao','criarclausulas','clausulas','solicitacoes','aprovarsolicitacao','recusarsolicitacao','ia','personalidade',
     'mute','desmute','ban','listanegra','tirarlistanegra'
   ];
   const ownerCommands = ['status','grupos','latencia','painel','reiniciar','backup','restaurar','usuarios','limparcache','logs','bloquear','clientes','aluguéis','revogar','aprovaraluguel','recusaraluguel'];
@@ -320,6 +321,9 @@ function menuCategory(command) {
         '\n!clausulas — lista e edita cláusulas, campos e idade máxima' +
         '\n!solicitacoes — lista pedidos pendentes' +
         '\n!aprovarsolicitacao código / !recusarsolicitacao código' +
+        '\n!ia on/off — liga a IA do grupo' +
+        '\n!personalidade descrição — escolhe uma personalidade livre para a IA do grupo' +
+        '\n!personalidade pv descrição — escolhe a personalidade do PV das apresentações' +
         '\n\nAções de moderação exigem que você seja administrador; remoções também exigem que o bot seja administrador.';
     case 'menudono':
       return '👑 MENU DO DONO\n\n' + list(ownerCommands) +
@@ -328,7 +332,7 @@ function menuCategory(command) {
       return '🎲 MENU DE BRINCADEIRAS — ' + GAME_COMMANDS.length + ' COMANDOS / GIFS PERSONALIZADOS\n\n' + games +
         '\n\nCada brincadeira procura uma cena de anime própria e mantém cache separado. Se não houver cena adequada, o bot responde em texto.';
     case 'menujogos':
-      return '🏆 MENU DE JOGOS E RANKING\n\n' + list(['duelo','desafio','quiz','roleta','top','ranking','desafiofig','votefig','roubarfig','adivinhe','resposta','corridafig']);
+      return '🏆 MENU DE JOGOS E RANKING\n\n' + list(['duelo','desafio','quiz','roleta','top','ranking','desafiofig','votefig','roubarfig','adivinhe','resposta','corridafig','impostor','stop','tribunal','campeonato']) + '\n\n⏰ Lembretes: !lembrete DD/MM/AAAA HH:MM texto / !lembretes';
     case 'menuaudio':
       return '🎧 MENU DE ÁUDIO\n\n' + list([...AUDIO_COMMANDS, 'play', 'playmp4']) +
         '\n\nResponda a um áudio ou envie um áudio junto com o comando.';
@@ -1942,6 +1946,7 @@ async function handleCommand(msg) {
       return;
     }
     // LEO_GROUP_IA_COMMAND_V1
+// LEO_YAMADA_EXPANSION_V1
     const SOCIAL_COMMANDS = new Set([
       ...ADVANCED_COMMANDS, // LEO_ADVANCED_SOCIAL_COMMANDS_V1
       ...COMMUNITY_COMMANDS,
@@ -1960,11 +1965,12 @@ async function handleCommand(msg) {
       'mudarnomegrupo', 'mudardescgrupo', 'promover', 'rebaixar', 'remover',
       'marcaradmins', 'marcarmembros', 'aprovar', 'recusar', 'avisar', 'avisos',
       'zeraravisos', 'definirregras', 'regrasgrupo', 'limparavisos',
-      'entrada', 'autoaceitar', 'autoaprovarsolicitacao', 'criarclausulas', 'clausulas', 'solicitacoes', 'aprovarsolicitacao', 'recusarsolicitacao', 'ia',
+      'entrada', 'autoaceitar', 'autoaprovarsolicitacao', 'criarclausulas', 'clausulas', 'solicitacoes', 'aprovarsolicitacao', 'recusarsolicitacao', 'ia', 'personalidade',
       'imgcontorno', 'imgsombra', 'imgpixel', 'imgnegativo', 'imgpb', 'imgzoom', 'imgdesfocar', 'imgespelhar', 'imggirar', 'imgbrilho', 'imgcontraste', 'imgsaturacao', 'imgsepia', 'imgnitidez', 'imgposter', 'imgquadrada', 'imgpaisagem', 'imgretrato', 'imgminiatura', 'imgcompress', 'stcontorno', 'stsombra', 'stpixel', 'stnegativo', 'stpb', 'stzoom', 'stdesfocar', 'stespelhar', 'stgirar', 'stbrilho', 'stcontraste', 'stsaturacao', 'stsepia', 'stnitidez', 'stposter', 'stquadrada', 'stvertical', 'sthorizontal', 'stmini', 'stmaxi',
       ...EXTRA_COMMANDS,
       ...ECONOMY_COMMANDS, // LEO_ECONOMY_COMMANDS_V1
-      ...BLACKLIST_COMMANDS
+      ...BLACKLIST_COMMANDS,
+      ...YAMADA_FUN_COMMANDS
     ]);
 
     if (SOCIAL_COMMANDS.has(command)) {
@@ -1992,7 +1998,22 @@ async function handleCommand(msg) {
             to,
             { text: message, ...options },
             { quoted }
-          )
+          ),
+        executeAction: async (action, actionValue, actionMsg = msg) => {
+          if (action !== 'ban') return false;
+          const actionContext = {
+            ...context,
+            msg: actionMsg,
+            command: 'ban',
+            value: String(actionValue || ''),
+            send: (to, message, quoted, options = {}) => sock.sendMessage(
+              to,
+              { text: String(message || '').replace(/!ban confirmar/g, '!ia confirmar').replace(/!ban cancelar/g, '!ia cancelar'), ...options },
+              { quoted }
+            )
+          };
+          return handleSocialCommand(actionContext);
+        }
       };
 
       // LEO_RENTAL_COMMAND_DISPATCH_V1
@@ -2004,7 +2025,9 @@ async function handleCommand(msg) {
       if (joinApprovalHandled) return;
 
       // LEO_ADVANCED_DISPATCH_V1
-      if (ECONOMY_COMMANDS.includes(command)) {
+      if (YAMADA_FUN_COMMANDS.includes(command)) {
+        await handleYamadaFunCommand(context);
+      } else if (ECONOMY_COMMANDS.includes(command)) {
         await handleEconomyCommand(context);
       } else if (ADVANCED_COMMANDS.includes(command)) {
         await handleAdvancedCommand(context);
@@ -3238,6 +3261,7 @@ currentSock.ev.on('messages.update', updates => {
 
         if (type !== 'notify') return;
         startAdvancedScheduler(currentSock); // LEO_ADVANCED_SCHEDULER_HOOK_V1
+        startYamadaFunScheduler(currentSock); // LEO_YAMADA_FUN_SCHEDULER_V1
 
         // Registra !grupo off/on de todo o lote antes de processar qualquer
         // mensagem. Isso impede a fila do próprio lote de adiantar mensagens antigas.

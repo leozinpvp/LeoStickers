@@ -1,0 +1,157 @@
+async function handleIACommand(ctx) {
+  const value = String(ctx.value || '').trim();
+  const normalized = normalizeLabel(value);
+  const isGroup = String(ctx.jid || '').endsWith('@g.us');
+
+  if (/^personalidade(?:\s|$)/i.test(value)) {
+    if (!isGroup) {
+      await ctx.send(ctx.jid, 'Configure as personalidades dentro do grupo, usando !ia personalidade grupo ... ou !ia personalidade pv ...', ctx.msg);
+      return true;
+    }
+    let rest = value.replace(/^personalidade\s*/i, '').trim();
+    if (!rest || normalizeLabel(rest) === 'ver') {
+      const data = loadData();
+      const cfg = getGroupConfig(data, ctx.jid);
+      await ctx.send(ctx.jid,
+        '🎭 *PERSONALIDADES DO YAMADA*\n\n' +
+        '*Grupo:* ' + (cfg.groupAIPersonality || 'Padrão amigável e objetivo') + '\n\n' +
+        '*PV das apresentações:* ' + (cfg.presentationAIPersonality || 'Padrão acolhedor e claro') + '\n\n' +
+        'Configure: !ia personalidade grupo sua descrição\n' +
+        'Configure: !ia personalidade pv sua descrição\n' +
+        'Redefina: !ia personalidade reset grupo|pv', ctx.msg);
+      return true;
+    }
+    if (!/^(grupo|pv|ver|reset)\b/i.test(rest)) rest = 'grupo ' + rest;
+    const reset = rest.match(/^reset\s+(grupo|pv|ambos)$/i);
+    if (reset) {
+      const metadata = await checkGroupAdmin(ctx);
+      if (!metadata) return true;
+      const data = loadData();
+      const cfg = getGroupConfig(data, ctx.jid, metadata.subject || '');
+      const key = reset[1].toLowerCase();
+      if (key === 'grupo' || key === 'ambos') cfg.groupAIPersonality = '';
+      if (key === 'pv' || key === 'ambos') cfg.presentationAIPersonality = '';
+      saveData(data);
+      await ctx.send(ctx.jid, `✅ Personalidade ${key} redefinida para o padrão.`, ctx.msg);
+      return true;
+    }
+    const set = rest.match(/^(grupo|pv)\s+([\s\S]+)$/i);
+    if (!set) {
+      await ctx.send(ctx.jid, 'Uso:\n!ia personalidade grupo jogador de futebol arrogante e engraçado\n!ia personalidade pv presidente formal\n!ia personalidade ver\n!ia personalidade reset grupo|pv|ambos', ctx.msg);
+      return true;
+    }
+    const description = set[2].trim();
+    if (description.length < 3 || description.length > 700) {
+      await ctx.send(ctx.jid, 'A personalidade precisa ter entre 3 e 700 caracteres.', ctx.msg);
+      return true;
+    }
+    const metadata = await checkGroupAdmin(ctx);
+    if (!metadata) return true;
+    const data = loadData();
+    const cfg = getGroupConfig(data, ctx.jid, metadata.subject || '');
+    const key = set[1].toLowerCase() === 'grupo' ? 'groupAIPersonality' : 'presentationAIPersonality';
+    cfg[key] = description.replace(/[\u0000-\u001f]/g, ' ').trim();
+    saveData(data);
+    await ctx.send(ctx.jid, `🎭 Personalidade do ${set[1].toLowerCase() === 'grupo' ? 'grupo' : 'PV'} atualizada!\n\n${cfg[key]}`, ctx.msg);
+    return true;
+  }
+
+  if (!isGroup) {
+    await ctx.send(ctx.jid, 'O comando !ia é usado dentro do grupo. O atendimento privado das apresentações funciona por conversa normal.', ctx.msg);
+    return true;
+  }
+
+  // Confirmação/cancelamento do fluxo de remoção já existente em !ban.
+  if (normalized === 'confirmar' || normalized === 'cancelar') {
+    if (typeof ctx.executeAction !== 'function') {
+      await ctx.send(ctx.jid, 'Não consegui acessar o fluxo seguro de moderação neste momento.', ctx.msg);
+      return true;
+    }
+    await ctx.executeAction('ban', normalized, ctx.msg);
+    return true;
+  }
+
+  const toggle = parseOnOff(value);
+  if (toggle !== null) {
+    const metadata = await checkGroupAdmin(ctx);
+    if (!metadata) return true;
+    const data = loadData();
+    const cfg = getGroupConfig(data, ctx.jid, metadata.subject || '');
+    cfg.groupAIEnabled = toggle;
+    saveData(data);
+    await ctx.send(ctx.jid, toggle
+      ? '🤖 Assistente de IA ativado neste grupo. Use !ia pergunta. Personalidade: !ia personalidade grupo ...'
+      : '🤖 Assistente de IA desativado neste grupo.', ctx.msg);
+    return true;
+  }
+
+  if (!value) {
+    await ctx.send(ctx.jid, 'Use !ia on/off, !ia pergunta ou !ia personalidade ver.', ctx.msg);
+    return true;
+  }
+
+  const data = loadData();
+  const cfg = getGroupConfig(data, ctx.jid);
+  if (!cfg.groupAIEnabled) {
+    await ctx.send(ctx.jid, '🤖 O assistente de IA ainda não foi ativado neste grupo. Um administrador pode usar !ia on.', ctx.msg);
+    return true;
+  }
+
+  try {
+    const analysis = await interpretGroupAIRequest(value, cfg.groupAIPersonality || '');
+    if (analysis.action === 'remove_member') {
+      // A IA apenas identifica a intenção. O código exige admin e resolve o alvo sem adivinhar.
+      const metadata = await checkGroupAdmin(ctx);
+      if (!metadata) return true;
+      const mentioned = [];
+      let current = ctx.msg?.message;
+      for (let i = 0; i < 8 && current; i++) {
+        for (const type of ['extendedTextMessage', 'imageMessage', 'videoMessage', 'documentMessage']) {
+          const ids = current[type]?.contextInfo?.mentionedJid;
+          if (Array.isArray(ids)) mentioned.push(...ids);
+        }
+        current = current.ephemeralMessage?.message || current.viewOnceMessage?.message || current.viewOnceMessageV2?.message;
+      }
+      const wanted = normalizeLabel(analysis.targetName);
+      let candidates = metadata.participants.filter(participant => {
+        if (mentioned.length) {
+          const aliases = groupAdminAliases(participant);
+          return mentioned.some(id => aliasesMatch(aliases, groupAdminAliases(id)));
+        }
+        const names = [participant.notify, participant.name, participant.verifiedName, participant.shortName]
+          .filter(Boolean).map(normalizeLabel);
+        return wanted && names.includes(wanted);
+      });
+      if (candidates.length !== 1) {
+        await ctx.send(ctx.jid, candidates.length > 1
+          ? 'Encontrei mais de uma pessoa com esse nome. Marque exatamente o participante com @ para evitar remover a pessoa errada.'
+          : 'Entendi que você pediu uma remoção, mas não consegui identificar o participante com segurança. Marque a pessoa com @ e repita o pedido.', ctx.msg);
+        return true;
+      }
+      const target = candidates[0];
+      if (target.admin === 'admin' || target.admin === 'superadmin' || target.isAdmin === true || target.isSuperAdmin === true ||
+          aliasesMatch(groupAdminAliases(target), groupAdminAliases(metadata.owner)) ||
+          aliasesMatch(groupAdminAliases(target), groupAdminAliases(ctx.sock.user?.id)) ||
+          aliasesMatch(groupAdminAliases(target), groupAdminAliases(ctx.sender))) {
+        await ctx.send(ctx.jid, 'Não posso solicitar a remoção de administrador, do bot ou de você mesmo.', ctx.msg);
+        return true;
+      }
+      const targetJid = target.id || target.jid || target.phoneNumber || target.lid;
+      if (!targetJid || typeof ctx.executeAction !== 'function') {
+        await ctx.send(ctx.jid, 'Não consegui preparar a ação com segurança. Tente usando !ban @pessoa.', ctx.msg);
+        return true;
+      }
+      const actionMsg = {
+        ...ctx.msg,
+        message: { extendedTextMessage: { text: '!ban', contextInfo: { mentionedJid: [targetJid] } } }
+      };
+      await ctx.executeAction('ban', '', actionMsg);
+      return true;
+    }
+    await ctx.send(ctx.jid, analysis.answer || 'Pode explicar um pouco mais o que você precisa?', ctx.msg);
+  } catch (error) {
+    console.warn('[IA DO GRUPO] Falha ao consultar Gemini:', error?.message || error);
+    await ctx.send(ctx.jid, '⚠️ Não consegui consultar a IA agora. Tente novamente mais tarde.', ctx.msg);
+  }
+  return true;
+}

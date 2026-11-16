@@ -867,107 +867,127 @@ async function markInvisibleCommand(ctx) {
   return ctx.send(ctx.jid, body, ctx.msg, { mentions });
 }
 
+// LEO_YAMADA_AI_BAN_LID_FIX_V1
+function pendingGroupBanFor(ctx) {
+  const key = ctx.jid + ':' + normalizeNumber(ctx.sender);
+  const aliases = getIdentityAliases(
+    ctx.sender,
+    ctx.msg?.key?.participant,
+    ctx.msg?.key?.participantAlt,
+    ctx.msg?.key?.remoteJidAlt
+  );
+  for (const [entryKey, pending] of pendingGroupBans.entries()) {
+    if (pending.groupJid && pending.groupJid !== ctx.jid) continue;
+    const savedAliases = new Set(pending.requesterAliases || []);
+    if (savedAliases.size && identitiesMatch(aliases, savedAliases)) return [entryKey, pending];
+  }
+  return pendingGroupBans.has(key) ? [key, pendingGroupBans.get(key)] : null;
+}
+
+function groupBanTargetIsProtected(target, adminContext, ctx) {
+  const targetAliases = getIdentityAliases(target);
+  const ownerAliases = getIdentityAliases(adminContext.metadata?.owner);
+  const botAliases = getIdentityAliases(ctx.sock.user?.id, ctx.sock.user?.lid, ctx.sock.user?.phoneNumber);
+  const senderAliases = getIdentityAliases(ctx.sender, ctx.msg?.key?.participant, ctx.msg?.key?.participantAlt);
+  return Boolean(
+    target.admin === 'admin' || target.admin === 'superadmin' || target.isAdmin === true || target.isSuperAdmin === true ||
+    identitiesMatch(targetAliases, ownerAliases) ||
+    identitiesMatch(targetAliases, botAliases) ||
+    identitiesMatch(targetAliases, senderAliases)
+  );
+}
+
 async function banCommand(ctx) {
   const adminContext = await getGroupAdminContext(ctx);
   if (!adminContext) return;
 
   const senderNumber = normalizeNumber(ctx.sender);
   const pendingKey = ctx.jid + ':' + senderNumber;
-  const action = ctx.value.trim().toLowerCase();
+  const action = String(ctx.value || '').trim().toLowerCase();
 
   if (action === 'cancelar') {
-    if (!pendingGroupBans.has(pendingKey)) {
-      return ctx.send(ctx.jid, 'Não existe uma remoção pendente sua.', ctx.msg);
-    }
-
-    pendingGroupBans.delete(pendingKey);
+    const entry = pendingGroupBanFor(ctx);
+    if (!entry) return ctx.send(ctx.jid, 'Não existe uma remoção pendente sua.', ctx.msg);
+    pendingGroupBans.delete(entry[0]);
     return ctx.send(ctx.jid, '✅ Remoção cancelada.', ctx.msg);
   }
 
   if (action === 'confirmar') {
-    const pending = pendingGroupBans.get(pendingKey);
-
-    if (!pending || Date.now() > pending.expires) {
-      pendingGroupBans.delete(pendingKey);
+    const entry = pendingGroupBanFor(ctx);
+    if (!entry || Date.now() > entry[1].expires) {
+      if (entry) pendingGroupBans.delete(entry[0]);
       return ctx.send(ctx.jid, '❌ Confirmação expirada ou inexistente. Use !ban @pessoa novamente.', ctx.msg);
     }
-
+    const [storedKey, pending] = entry;
     const fresh = await getGroupAdminContext(ctx);
     if (!fresh) return;
-
-    const target = fresh.participants.find(
-      p => normalizeNumber(p.id) === pending.targetNumber
+    const targetAliases = new Set(pending.targetAliases || []);
+    const target = fresh.participants.find(participant =>
+      (targetAliases.size && identitiesMatch(getIdentityAliases(participant), targetAliases)) ||
+      (pending.targetJid && identitiesMatch(getIdentityAliases(participant), getIdentityAliases(pending.targetJid))) ||
+      (pending.targetNumber && normalizeNumber(participant.id || participant.jid || participant.phoneNumber) === pending.targetNumber)
     );
-
     if (!target) {
-      pendingGroupBans.delete(pendingKey);
-      return ctx.send(ctx.jid, 'Essa pessoa não está mais no grupo.', ctx.msg);
+      pendingGroupBans.delete(storedKey);
+      return ctx.send(ctx.jid, 'Essa pessoa não está mais no grupo ou não pôde ser identificada com segurança.', ctx.msg);
     }
-
-    if (
-      target.admin === 'superadmin' ||
-      normalizeNumber(target.id) === normalizeNumber(ctx.sock.user?.id || '') ||
-      normalizeNumber(target.id) === senderNumber
-    ) {
-      pendingGroupBans.delete(pendingKey);
-      return ctx.send(ctx.jid, '❌ Essa pessoa não pode ser removida por este comando.', ctx.msg);
+    if (groupBanTargetIsProtected(target, fresh, ctx)) {
+      pendingGroupBans.delete(storedKey);
+      return ctx.send(ctx.jid, '❌ Administradores, o dono do grupo, o bot e quem solicitou a ação não podem ser removidos por este comando.', ctx.msg);
     }
-
-    await ctx.sock.groupParticipantsUpdate(
-      ctx.jid,
-      [target.id],
-      'remove'
-    );
-
-    pendingGroupBans.delete(pendingKey);
-
+    const targetJid = target.id || target.jid || target.phoneNumber || target.lid || pending.targetJid;
+    if (!targetJid) {
+      pendingGroupBans.delete(storedKey);
+      return ctx.send(ctx.jid, 'Não consegui obter o identificador atual do participante. Nada foi removido.', ctx.msg);
+    }
+    await ctx.sock.groupParticipantsUpdate(ctx.jid, [targetJid], 'remove');
+    pendingGroupBans.delete(storedKey);
     return ctx.send(
       ctx.jid,
-      '✅ Remoção executada para @' + target.id.split('@')[0] + '.',
+      '✅ Remoção executada para @' + String(targetJid).split('@')[0] + '.',
       ctx.msg,
-      { mentions: [target.id] }
+      { mentions: [targetJid] }
     );
   }
 
   const mentioned = getCommandMentions(ctx.msg);
-
   if (mentioned.length !== 1) {
-    return ctx.send(
-      ctx.jid,
-      'Uso:\n!ban @pessoa - Solicitar remoção\n!ban confirmar - Confirmar\n!ban cancelar - Cancelar',
-      ctx.msg
-    );
+    return ctx.send(ctx.jid, 'Uso:\n!ban @pessoa - Solicitar remoção\n!ban confirmar - Confirmar\n!ban cancelar - Cancelar', ctx.msg);
   }
 
+  const mentionedAliases = getIdentityAliases(mentioned[0]);
   const targetNumber = normalizeNumber(mentioned[0]);
-  const target = adminContext.participants.find(
-    p => normalizeNumber(p.id) === targetNumber
+  const target = adminContext.participants.find(participant =>
+    identitiesMatch(getIdentityAliases(participant), mentionedAliases) ||
+    normalizeNumber(participant.id || participant.jid || participant.phoneNumber) === targetNumber
   );
-
-  if (!target) {
-    return ctx.send(ctx.jid, '❌ Essa pessoa não foi encontrada no grupo.', ctx.msg);
+  if (!target) return ctx.send(ctx.jid, '❌ Essa pessoa não foi encontrada entre os participantes atuais do grupo.', ctx.msg);
+  if (groupBanTargetIsProtected(target, adminContext, ctx)) {
+    return ctx.send(ctx.jid, '❌ Administradores, o dono do grupo, o bot e você mesmo não podem ser removidos por este comando.', ctx.msg);
   }
 
-  if (
-    target.admin === 'superadmin' ||
-    normalizeNumber(target.id) === normalizeNumber(ctx.sock.user?.id || '') ||
-    targetNumber === senderNumber
-  ) {
-    return ctx.send(ctx.jid, '❌ Não é permitido solicitar a remoção dessa pessoa.', ctx.msg);
-  }
-
+  const targetJid = target.id || target.jid || target.phoneNumber || target.lid;
+  if (!targetJid) return ctx.send(ctx.jid, '❌ Não consegui obter um identificador válido para essa pessoa.', ctx.msg);
+  const requesterAliases = [...getIdentityAliases(
+    ctx.sender,
+    ctx.msg?.key?.participant,
+    ctx.msg?.key?.participantAlt,
+    ctx.msg?.key?.remoteJidAlt
+  )];
   pendingGroupBans.set(pendingKey, {
+    groupJid: ctx.jid,
+    requesterAliases,
     targetNumber,
-    expires: Date.now() + 90000
+    targetJid,
+    targetAliases: [...getIdentityAliases(target)],
+    expires: Date.now() + 90_000
   });
-
+  const mentionNumber = String(target.phoneNumber || target.jid || targetJid).split('@')[0].split(':')[0];
   return ctx.send(
     ctx.jid,
-    '⚠️ CONFIRMAÇÃO DE REMOÇÃO\n\nPessoa: @' +
-      target.id.split('@')[0] +
-      '\n\nPara executar, envie !ban confirmar.\nPara desistir, envie !ban cancelar.\n\nA confirmação expira em 90 segundos.',
+    '⚠️ CONFIRMAÇÃO DE REMOÇÃO\n\nPessoa: @' + mentionNumber + '\n\nPara executar, envie !ban confirmar.\nPara desistir, envie !ban cancelar.\n\nA confirmação expira em 90 segundos.',
     ctx.msg,
-    { mentions: [target.id] }
+    { mentions: [targetJid] }
   );
 }
 
